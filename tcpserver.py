@@ -13,11 +13,9 @@ class SimplexTCPServer:
     def __init__(self, file, listening_port, address_for_acks, port_for_acks):
         self.file = file
         self.listening_port = listening_port
-        self.address_for_acks = address_for_acks
-        self.port_for_acks = port_for_acks
+        self.client_address = (address_for_acks, port_for_acks)
         
         self.socket = self.create_and_bind_socket()
-        
         return
         
     def create_and_bind_socket(self):
@@ -38,11 +36,13 @@ class SimplexTCPServer:
         pass
     
     def read_datagram(self):
-        message, client_address = self.socket.recvfrom(2048)
+        message, proxy_address = self.socket.recvfrom(2048)
+        print(f"proxy's address: {proxy_address}")
         
         # TODO remove later
         modified_message = message.decode().upper()
-        self.socket.sendto(modified_message.encode(), client_address)
+        self.socket.sendto(modified_message.encode(), self.client_address)
+        print("here")
         self.socket.close()
         return
     
