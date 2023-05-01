@@ -1,5 +1,22 @@
 import argparse
 from socket import *
+import utils
+import logging
+import struct
+
+logger = logging.getLogger("TCPServer")
+logger.setLevel(logging.INFO)
+
+# create console handler with a higher log level
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+
+# create formatter and add it to the handler
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+
+# add the handler to the logger
+logger.addHandler(ch)
 
 def validate_args():
     """
@@ -16,6 +33,7 @@ class SimplexTCPServer:
         self.client_address = (address_for_acks, port_for_acks)
         
         self.socket = self.create_and_bind_socket()
+        logger.info(f"Socket created and bound to port {self.listening_port}")
         return
         
     def create_and_bind_socket(self):
@@ -24,9 +42,36 @@ class SimplexTCPServer:
         """
         self.socket = socket(AF_INET, SOCK_DGRAM)   
         self.socket.bind(('', self.listening_port))
-        
-        print(f"Server listening on port {self.listening_port}")
         return self.socket
+    
+    def establish_connection(self):
+        """
+        Establishes a connection with the client address.
+        1. Receive SYN segment with random sequence number and no payload.
+        2. Send SYNACK segment to client with random sequence number, SYN and ACK fields, and no payload.
+        3. Send ACK segment with payload.
+        """
+        # TODO what if does not receive SYN segment
+        while True:
+            try:
+                syn_segment, client_address = self.socket.recvfrom(2048)
+                # TODO abstraction for this with header later.
+                if syn_segment[13] & 0b00000010:
+                    # We need to unpack the sequence number byte string from the segment in a format that we can use
+                    #
+                    client_isn = struct.unpack("!I", syn_segment[4:8])[0]
+                    logger.info(f"SYN segment received from {client_address} with client ISN: {client_isn}")
+                    break
+                else:
+                    logger.warning(f"Received segment with SYN flag not set. Ignoring. Message: {syn_segment.decode()}")
+                    continue
+            except timeout:
+                # TODO increase timeout acc. formula
+                continue
+            except Exception as e:
+                logger.warning(f"Exception occurred while receiving SYN segment: {e}")
+        return
+        
         
     
     def create_datagram(self):
@@ -49,6 +94,7 @@ class SimplexTCPServer:
     
     def shutdown_server(self):
         pass
+    
     
 def main():
     """
@@ -75,9 +121,9 @@ def main():
     )
     args = parser.parse_args()
     print("===============")
-    print("Printing args:")
+    print("TCPServer Parameters:")
     for arg in vars(args):
-        print(arg, getattr(args, arg))
+        print(f"{arg}: {getattr(args, arg)}")
     print("===============")
     # validate_args(args, parser)
     
@@ -86,7 +132,7 @@ def main():
         args.address_for_acks, args.port_for_acks
     )
     
-    tcp_server.read_datagram()
+    tcp_server.establish_connection()
     return
 
 if __name__ == "__main__":

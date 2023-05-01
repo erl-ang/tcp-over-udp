@@ -1,11 +1,18 @@
-from typing import Set
-
 HEADER_LEN = 20
-DEBUG = True
-
+import logging
 
 def make_tcp_header(
-    src_port, dest_port, seq_num, ack_num, recv_window, flags, checksum
+    src_port, dest_port, seq_num, ack_num, recv_window, flags
+):
+    # TODO test
+    tcp_header = make_tcp_header_without_checksum(
+        src_port, dest_port, seq_num, ack_num, recv_window, flags
+    )
+    tcp_header[16:18] = calculate_checksum(tcp_header)
+    return tcp_header
+
+def make_tcp_header_without_checksum(
+    src_port, dest_port, seq_num, ack_num, recv_window, flags
 ):
     """
     The TCP header is 20 bytes long. It contains the following fields:
@@ -16,7 +23,7 @@ def make_tcp_header(
     - Receive window (2 bytes)
     - Header length (4 bits)
     - Flags (8 bits)
-    - Checksum (2 bytes)
+    - Checksum (2 bytes, computed after the header is created)
     - Urgent pointer (2 bytes, not used)
     """
     tcp_header = bytearray(20)
@@ -62,7 +69,7 @@ def make_tcp_header(
 
     # The checksum field is 16 bits long. It is used to detect whether errors have
     # been introduced into the segment.
-    tcp_header[16:18] = checksum.to_bytes(2, byteorder="big")
+    # tcp_header[16:18] = checksum.to_bytes(2, byteorder="big")
 
     # The urgent pointer field is 16 bits long. It is used to indicate the end of
     # urgent data. This is not used in our implementation.
@@ -78,19 +85,15 @@ def calculate_checksum(segment):
     in the header.
 
     The checksum is calculated by taking the 1s complement of the sum of all the 16-bit
-    words in the segment (header AND data), with any overflow encountered during the sum
-    being wrapped around.
+    words in the segment (header AND data with checksum set to 0), with any 
+    overflow encountered during the sum being wrapped around.
 
     1s complement is obtained by flipping all the bits in a number.
     """
-    # TODO: typehinting.
-    assert (type(segment) == bytearray, "Segment must be a bytearray")
-
     # Ensure segment's length is a multiple of 2 bytes by padding a 0 byte.
     if len(segment) % 2 != 0:
+        logging.info(f"Segment length is {len(segment)} bytes, padding with 0 byte.")
         segment += b"\x00"
-
-    assert (len(segment) % 2 == 0, "Segment must be a multiple of 2 bytes")
 
     # Calculate the sum of all the 16-bit words in the segment. We
     # iterate over every other byte because a 16-bit word is 2 bytes.
@@ -120,6 +123,10 @@ def verify_checksum(segment):
     will be 1111111111111111.
     """
     segment_checksum = int.from_bytes(segment[16:18], byteorder="big")
+    
+    # Set the checksum field to 0 so that the redone checksum calculation is aligns
+    # with the original checksum calculation.
+    segment[16:18] = b"\x00\x00"
 
     calculated_checksum = calculate_checksum(segment)
 
