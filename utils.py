@@ -198,9 +198,6 @@ def calculate_checksum(segment: bytearray):
 def verify_checksum(segment):
     """
     Verify the checksum of a segment to make sure no errors have been introduced.
-
-    If no errors are introduced into the packet, then the sum at the receiver
-    will be 1111111111111111.
     """
     segment_checksum = int.from_bytes(segment[16:18], byteorder="big")
     logger.info(f"segment's checksum: {segment_checksum}")
@@ -210,14 +207,14 @@ def verify_checksum(segment):
     segment = segment[:16] + b"\x00\x00" + segment[18:]
 
     calculated_checksum = int.from_bytes(calculate_checksum(segment), byteorder="big")
-    logger.info(f"calculated checksum: {calculated_checksum}")
-    calculated_checksum = ~calculated_checksum & 0xFFFF
+    # The following commented out section is deprecated:
+    # calculated_checksum = ~calculated_checksum & 0xFFFF
 
-    # Check if the calculated checksum matches the checksum in the segment.
-    # The checksum is valid if checksum + calculated checksum = 1111111111111111.
-    calculated_checksum += segment_checksum
-    logger.info(f"full checksum: {calculated_checksum}")
-    if calculated_checksum > 0xFFFF:
-        calculated_checksum = (calculated_checksum & 0xFFFF) + 1
+    # # Check if the calculated checksum matches the checksum in the segment.
+    # # The checksum is valid if checksum + calculated checksum = 1111111111111111.
+    # calculated_checksum += segment_checksum
+    # if calculated_checksum > 0xFFFF:
+    #     calculated_checksum = (calculated_checksum & 0xFFFF) + 1
+    # calculated_checksum == 0xFFFF
 
-    return calculated_checksum == 0xFFFF
+    return calculated_checksum == segment_checksum

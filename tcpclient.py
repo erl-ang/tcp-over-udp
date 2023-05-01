@@ -84,6 +84,9 @@ class SimplexTCPClient:
     def create_tcp_segment(self, payload, flags):
         """
         Creates a TCP segment with the given payload and flags.
+
+        :param payload: payload to be sent to the server
+        :param flags: set of flags to be set in the TCP header
         """
 
         # Create the segment without the checksum.
@@ -96,46 +99,11 @@ class SimplexTCPClient:
             flags=flags,
         )
 
-        # Create the UDP packet manually so we can calculate the checksum.
-        # udp_header = struct.pack(
-        #     "!HHHH",
-        #     self.ack_port_number,
-        #     self.proxy_address[1],
-        #     8 + 20 + len(payload),
-        #     0,  # empty checksum in the encapsulated UDP packet
-        # )
-
-        # Attach the TCP header to the UDP packet.
+        # Attach the TCP header to payload.
         tcp_header = tcp_segment.make_tcp_header(payload)
         tcp_segment = tcp_header + payload
 
         return tcp_segment
-
-    def get_data(self):
-        """
-        For now, data will be a string literal. Later have to read file contents
-        to send to the server.
-        """
-        return input("Input message here: ")
-
-    def read_datagram(self):
-        """ """
-        message, server_address = self.socket.recvfrom(2048)
-        print(f"message received: {message.decode()}")
-        return
-
-    def send_datagram(self):
-        """
-        Forwards the data to the link emulator.
-        """
-        message = self.get_data()
-
-        # Attach destination address to the message.
-        self.socket.sendto(message.encode(), self.proxy_address)
-        modified_message, server_address = self.socket.recvfrom(2048)
-        print(modified_message.decode())
-        self.socket.close()
-        return
 
     def shutdown_client(self):
         """ """
