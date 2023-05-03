@@ -35,8 +35,8 @@ class SimplexTCPServer:
         self.socket.settimeout(0.5)
         logger.info(f"Socket created and bound to port {self.listening_port}")
 
-        self.cur_ack_num = -1
-        self.seq_num = random.randint(0, 2**32 - 1)
+        self.client_isn = -1
+        self.server_isn = random.randint(0, 2**32 - 1)
         return
 
     def create_and_bind_socket(self):
@@ -47,7 +47,7 @@ class SimplexTCPServer:
         self.socket.bind(("", self.listening_port))
         return self.socket
 
-    def create_tcp_segment(self, payload, flags):
+    def create_tcp_segment(self, payload, seq_num, ack_num, flags):
         """
         Creates a TCP segment with the given payload and flags.
 
@@ -55,15 +55,14 @@ class SimplexTCPServer:
         :param flags: set of flags to be set in the TCP header
         """
         # Create the segment without the checksum. Increment the ack number,
-        # indicating that the server has received up to (not including) the cur_ack_num sequence number.
-        self.cur_ack_num += 1
-        logger.info(f"Sending segment with ack number {self.cur_ack_num}")
+        # indicating that the server is expecting the ack_num + 1 byte next
+        logger.info(f"Sending segment with ack number {ack_num}")
 
         tcp_segment = SimplexTCPHeader(
             src_port=self.listening_port,
             dest_port=self.client_address[1],
-            seq_num=self.seq_num,  # TODO increment
-            ack_num=self.cur_ack_num,
+            seq_num=seq_num,
+            ack_num=ack_num,
             recv_window=10,  # TODO: change this
             flags=flags,
         )
@@ -73,6 +72,27 @@ class SimplexTCPServer:
         tcp_segment = tcp_header + payload
 
         return tcp_segment
+
+    def receive_file(self):
+        """
+        Receives the requested file from the client with TCP flow control.
+        """
+        #
+        # Allocate a receive buffer for teh connection of size recv_buffer
+
+        # Occassionally read from the buffer. last_byte_read indicates the number
+        # of the last byte in the data stream read from the buffer by the server.
+        # last_byte_recieved denotes the number of hte last byte in the data stream
+        # that has arrived from the network adn has been placed in the server's receive
+        # buffer.
+
+        # At all times, last_byte_received - last_byte_read <= recv_buffer because TCP
+        # is not permitted to overflow the allocated buffer.
+
+        # rwnd, the receive window, is the amount of space left in the receive buffer.
+        # rwnd = recv_buffer - (last_byte_received - last_byte_read)
+
+        pass
 
     def establish_connection(self):
         """
@@ -101,7 +121,12 @@ class SimplexTCPServer:
         """
         # Create TCP segment. TODO: information on how the sequence number is incremented
         # and ack number is set.
-        synack_segment = self.create_tcp_segment(payload=payload, flags=flags)
+        synack_segment = self.create_tcp_segment(
+            payload=payload,
+            seq_num=self.server_isn,
+            ack_num=(self.client_isn + 1),
+            flags=flags,
+        )
         logger.info(f"Segment created with payload {payload} and flags {flags}")
 
         # Keep sending SYNACK segments for the maximum amount of retires
@@ -193,10 +218,10 @@ class SimplexTCPServer:
                 logger.info(f"Flag verification passed for segment!")
 
                 # We need to unpack the sequence number byte string from the segment in a format that we can use
-                self.cur_ack_num = struct.unpack("!I", syn_segment[4:8])[0]
+                self.client_isn = struct.unpack("!I", syn_segment[4:8])[0]
 
                 logger.info(f"Checksum verification passed for SYN segment")
-                logger.info(f"SYN segment received with client ISN: {self.cur_ack_num}")
+                logger.info(f"SYN segment received with client ISN: {self.client_isn}")
                 break
             except timeout:
                 # TODO increase timeout acc. formula
@@ -213,7 +238,7 @@ class SimplexTCPServer:
             logger.error(f"Maximum number of retries reached. Aborting...")
             sys.exit(1)
 
-        return self.cur_ack_num
+        return self.client_isn
 
     def shutdown_server(self):
         pass

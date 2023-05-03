@@ -5,6 +5,7 @@ import random
 import logging
 import struct
 import sys
+import os
 
 logger = logging.getLogger("TCPClient")
 logger.setLevel(logging.INFO)
@@ -20,6 +21,10 @@ logger.addHandler(ch)
 # Implementations of TCP usually have a maximum number of retransmissions for a segment.
 # 5-7 is a common valid.
 MAX_RETRIES = 6
+
+# Maximum segment size (MSS) is the maximum amount of data that can be carried in a single
+# TCP segment. The MSS is specified during the initial connection setup.
+MSS = 40
 
 
 class SimplexTCPClient:
@@ -41,6 +46,7 @@ class SimplexTCPClient:
         self.client_isn = 0
         self.timeout = 0.5
         self.socket.settimeout(0.5)
+        self.server_isn = 0
 
     def create_and_bind_socket(self):
         """
@@ -64,15 +70,70 @@ class SimplexTCPClient:
         logger.info(
             f"Entered ESTABLISHED state: received SYNACK segment from server and sent ACK"
         )
-        pass
+        return
 
-    def send_file():
-        """ """
-        # Read data from the specified file
-        # send it to the emulator's address and port
-        # receive acks on teh ack_port_number
+    def send_file(self):
+        """
+        Uses the alternating bit protocol to send the file to the server.
 
-        pass
+
+        """
+
+        # Send the specified file to the server in chunks of MSS bytes. Stop sending when
+        # the server's receive window is full.
+        file = open(self.file, "rb")
+        file_size = os.path.getsize(self.file)
+
+        # Keep track of last_byte_sent and last_byte_acked. To make sure that the client
+        # is not overflowing the receive buffer of the server, the client makes sure that
+        # the amount of unacked data <= rwnd. The amount of unacl data is last_byte_sent - last_byte_acked.
+        last_byte_sent = 0
+        last_byte_acked = 0
+
+        while last_byte_acked < file_size:
+
+            # TODO: last_byte_sent - last_byte_acked = self.windowsize case?
+            while (
+                last_byte_sent - last_byte_acked < self.windowsize
+                and last_byte_sent < file_size
+            ):
+                payload = file.read(MSS)
+
+                # TODO:
+                #   sequence number = client_isn + last_byte_sent
+                #   ack number = server_isn + last_byte_acked
+                seq_num = self.client_isn + last_byte_sent
+                ack_num = self.server_isn + last_byte_acked
+                packet = self.create_tcp_segment(
+                    payload=payload, seq_num=seq_num, ack_num=ack_num, flags={"ACK"}
+                )
+
+            retry_count = 0
+            for _ in range(MAX_RETRIES + 1):
+                retry_count += 1
+
+                self.socket.sendto(packet, self.proxy_address)
+                logger.info(
+                    f"Sent packet with sequence number {seq_num} and ack number {ack_num}"
+                )
+
+                try:
+                    ack, server_address = self.socket.recvfrom(MSS)
+                    acked_byte = struct.unpack("!I", ack[8:12])[
+                        0
+                    ]  # TODO abstract this out
+
+                    # Ignoring OOO packets
+                    if acked_byte > last_byte_acked:
+                        last_byte_acked = acked_byte
+                except timeout:
+
+                    continue
+        # The windowsize is used to give the sender an idea of how much free buffer space
+        # is available at the receiver. Both the sender and receiver maintain a variable
+        # maintain a distinct receive window.
+
+        return
 
     def _send_syn_and_wait_for_synack(self):
         """
@@ -83,8 +144,11 @@ class SimplexTCPClient:
         self.client_isn = random.randint(0, 2**32 - 1)
         logger.info(f"Client ISN: {self.client_isn}")
 
-        # Create SYN segment with no payload and SYN flag set.
-        syn_segment = self.create_tcp_segment(payload=b"", flags={"SYN"})
+        # Create SYN segment with no payload, SYN flag set, and random sequence number. We
+        # set the ack number to 0 because we are not acknowledging any data from the server.
+        syn_segment = self.create_tcp_segment(
+            payload=b"", seq_num=self.client_isn, ack_num=0, flags={"SYN"}
+        )
 
         # Keep track of the number of retries so we can differentiate between a successful
         # retransmission and reaching the maximum number of retries.
@@ -142,20 +206,19 @@ class SimplexTCPClient:
 
         return self.server_isn
 
-    def create_tcp_segment(self, payload, flags):
+    def create_tcp_segment(self, payload, seq_num, ack_num, flags):
         """
         Creates a TCP segment with the given payload and flags.
 
         :param payload: payload to be sent to the server
         :param flags: set of flags to be set in the TCP header
         """
-
         # Create the segment without the checksum.
         tcp_segment = SimplexTCPHeader(
             src_port=self.ack_port_number,
             dest_port=self.proxy_address[1],
-            seq_num=self.client_isn,  # TODO increment
-            ack_num=0,  # TODO increment this
+            seq_num=seq_num,
+            ack_num=ack_num,
             recv_window=self.windowsize,
             flags=flags,
         )
@@ -177,7 +240,9 @@ class SimplexTCPClient:
 
 
 def main():
-    """ """
+    """
+    Entry point for the TCP client.
+    """
     parser = argparse.ArgumentParser(description="Bootleg TCP implementation over UDP")
     parser.add_argument("file", type=str, help="file that client reads data from")
     parser.add_argument("address_of_udpl", type=str, help="emulator's address")
@@ -185,16 +250,19 @@ def main():
     parser.add_argument("windowsize", type=int, help="window size in bytes")
     parser.add_argument("ack_port_number", type=int, help="port number for ACKs")
     args = parser.parse_args()
+
     print("=============================")
     print("TCPClient Parameters:")
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
     print("==============================")
 
+    # Validate command line arguments before allocating TCP state variables.
     if not validate_args(args, is_client=True):
         logger.error("Invalid arguments. Aborting...")
         sys.exit(1)
 
+    # Create and run the TCP client instance to transfer the file to the server.
     tcp_client = SimplexTCPClient(
         args.file,
         args.address_of_udpl,
@@ -203,7 +271,6 @@ def main():
         args.ack_port_number,
     )
     tcp_client.run()
-
     return
 
 
