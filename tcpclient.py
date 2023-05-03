@@ -1,20 +1,25 @@
 import argparse
 from socket import *
-from utils import SimplexTCPHeader, calculate_checksum, verify_checksum, verify_flags
+from utils import SimplexTCPHeader, verify_checksum, verify_flags, validate_args
 import random
 import logging
 import struct
+import sys
 
 logger = logging.getLogger("TCPClient")
 logger.setLevel(logging.INFO)
 
-# To log on stdout, we create console handler with a higher log level, format it, 
+# To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
+
+# Implementations of TCP usually have a maximum number of retransmissions for a segment.
+# 5-7 is a common valid.
+MAX_RETRIES = 6
 
 
 class SimplexTCPClient:
@@ -53,17 +58,43 @@ class SimplexTCPClient:
         3. Send ACK segment with payload.
         """
         logger.info(f"Establishing connection with server...")
-        # 1. Send SYN segment with no payload, SYN flag set, and random sequence number.
-        # Generate random sequence number, which will be the client's ISN that will be incremented
-        # for each segment sent.
+        self._send_syn_and_wait_for_synack()
+
+        # At this point, we have received a SYNACK segment from the server
+        logger.info(
+            f"Entered ESTABLISHED state: received SYNACK segment from server and sent ACK"
+        )
+        pass
+
+    def send_file():
+        """ """
+        # Read data from the specified file
+        # send it to the emulator's address and port
+        # receive acks on teh ack_port_number
+
+        pass
+
+    def _send_syn_and_wait_for_synack(self):
+        """
+        Send SYN segment with no payload, SYN flag set, and random sequence number.
+        Generate random sequence number, which will be the client's ISN that will be incremented
+        for each segment sent.
+        """
         self.client_isn = random.randint(0, 2**32 - 1)
         logger.info(f"Client ISN: {self.client_isn}")
 
+        # Create SYN segment with no payload and SYN flag set.
         syn_segment = self.create_tcp_segment(payload=b"", flags={"SYN"})
-        logger.info(f"SYN segment created")
 
-        while True:
+        # Keep track of the number of retries so we can differentiate between a successful
+        # retransmission and reaching the maximum number of retries.
+        retry_count = 0
+
+        for _ in range(MAX_RETRIES + 1):
+            retry_count += 1
             self.socket.sendto(syn_segment, self.proxy_address)
+            logger.info(f"Entered SYN_SENT state: sent SYN segment to server")
+
             try:
                 # TODO: change buffer size
                 synack_segment, server_address = self.socket.recvfrom(2048)
@@ -80,6 +111,20 @@ class SimplexTCPClient:
                     logger.error(f"SYNACK segment does not have SYN and ACK flag set")
                     continue
                 logger.info(f"Flag verification passed for segment!")
+
+                # Check if the ACK number is correct.
+                ack_num = struct.unpack("!I", synack_segment[4:8])[0]
+                if ack_num != self.client_isn + 1:
+                    logger.error(
+                        f"ACK number is incorrect, expected {self.client_isn + 1}, received: {ack_num}"
+                    )
+                    continue
+
+                # Stash the server's ISN for future use. This will be used to ACK the server's segments.
+                self.server_isn = struct.unpack("!I", synack_segment[8:12])[0]
+                logger.info(
+                    f"Received SYNACK segment from server with server ISN: {self.server_isn}"
+                )
                 break
             except timeout:
                 # TODO: increase timeout acc. to formula in book.
@@ -91,7 +136,11 @@ class SimplexTCPClient:
                 )
                 continue
 
-        return
+        if retry_count > MAX_RETRIES:
+            logger.error(f"Maximum number of retries reached. Aborting...")
+            sys.exit(1)
+
+        return self.server_isn
 
     def create_tcp_segment(self, payload, flags):
         """
@@ -122,11 +171,14 @@ class SimplexTCPClient:
         self.socket.close()
         return
 
+    def run(self):
+        self.establish_connection()
+        return
+
 
 def main():
     """ """
     parser = argparse.ArgumentParser(description="Bootleg TCP implementation over UDP")
-    # TDOO: validate args
     parser.add_argument("file", type=str, help="file that client reads data from")
     parser.add_argument("address_of_udpl", type=str, help="emulator's address")
     parser.add_argument("port_number_of_udpl", type=int, help="emulator's port number")
@@ -138,7 +190,10 @@ def main():
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
     print("==============================")
-    # TODO: validate args
+
+    if not validate_args(args, is_client=True):
+        logger.error("Invalid arguments. Aborting...")
+        sys.exit(1)
 
     tcp_client = SimplexTCPClient(
         args.file,
@@ -147,7 +202,7 @@ def main():
         args.windowsize,
         args.ack_port_number,
     )
-    tcp_client.establish_connection()
+    tcp_client.run()
 
     return
 

@@ -1,15 +1,16 @@
 import argparse
 from socket import *
-from utils import SimplexTCPHeader, calculate_checksum, verify_checksum, verify_flags
+from utils import SimplexTCPHeader, verify_checksum, verify_flags, validate_args
 import logging
 import struct
 import traceback
 import random
+import sys
 
 logger = logging.getLogger("TCPServer")
 logger.setLevel(logging.INFO)
 
-# To log on stdout, we create console handler with a higher log level, format it, 
+# To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
@@ -17,10 +18,9 @@ formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(messag
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-
-def validate_args():
-    """ """
-    pass
+# Implementations of TCP usually have a maximum number of retransmissions for a segment.
+# 5-7 is a common valid.
+MAX_RETRIES = 6
 
 
 class SimplexTCPServer:
@@ -76,13 +76,15 @@ class SimplexTCPServer:
 
     def establish_connection(self):
         """
-        Establishes a connection with the client address.
+        Establishes a connection with the client address via the following steps:
         1. Receive SYN segment with random sequence number and no payload.
         2. Send SYNACK segment to client with random sequence number, SYN and ACK fields, and no payload.
         3. Receive ACK segment with payload.
+
+        TODO clean up when allocating TCP state variables
         """
         logger.info(f"Waiting for SYN segment to establish connection...")
-        self.cur_ack_num = self._listen_for_syn()
+        self._listen_for_syn()
 
         logger.info(f"Sending SYNACK segment to client...")
         self._send_and_wait_for_ack(
@@ -102,9 +104,14 @@ class SimplexTCPServer:
         synack_segment = self.create_tcp_segment(payload=payload, flags=flags)
         logger.info(f"Segment created with payload {payload} and flags {flags}")
 
-        # Keep sending SYNACK segments until we receive an ACK segment that is
-        # not corrupted and the one that we are expecting.
-        while True:
+        # Keep sending SYNACK segments for the maximum amount of retires
+        # until we receive an ACK segment that is not corrupted and the one that we are expecting.
+        # Keep track of the number of retries so we can differentiate between a successful
+        # retransmission and reaching the maximum number of retries.
+        retry_count = 0
+
+        for _ in range(MAX_RETRIES + 1):
+            retry_count += 1
             self.socket.sendto(synack_segment, self.client_address)
             logger.info(f"Segment sent!")
 
@@ -138,6 +145,9 @@ class SimplexTCPServer:
                 logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
+        if retry_count > MAX_RETRIES:
+            logger.error(f"Maximum number of retries reached. Aborting...")
+            sys.exit(1)
         return
 
     def _listen_for_syn(self):
@@ -152,9 +162,16 @@ class SimplexTCPServer:
         If the segment received does not have the SYN flag set, it is ignored.
         If the segment is corrupted (checksum verification fails), it is ignored.
         """
-        client_isn = None
+        # The client will send a SYN segment with no payload and a randomly chosen
+        # sequence number. We need to receive this segment and stash the sequence
+        # number so we can ack sequence + 1 when we send the SYNACK segment.
+        # Keep track of the number of retries so we can differentiate between a successful
+        # retransmission and reaching the maximum number of retries.
+        retry_count = 0
 
-        while True:
+        for _ in range(MAX_RETRIES + 1):
+            retry_count += 1
+
             try:
                 syn_segment, client_address = self.socket.recvfrom(2048)
 
@@ -176,10 +193,10 @@ class SimplexTCPServer:
                 logger.info(f"Flag verification passed for segment!")
 
                 # We need to unpack the sequence number byte string from the segment in a format that we can use
-                client_isn = struct.unpack("!I", syn_segment[4:8])[0]
+                self.cur_ack_num = struct.unpack("!I", syn_segment[4:8])[0]
 
                 logger.info(f"Checksum verification passed for SYN segment")
-                logger.info(f"SYN segment received with client ISN: {client_isn}")
+                logger.info(f"SYN segment received with client ISN: {self.cur_ack_num}")
                 break
             except timeout:
                 # TODO increase timeout acc. formula
@@ -192,10 +209,18 @@ class SimplexTCPServer:
                 logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
-        return client_isn
+        if retry_count > MAX_RETRIES:
+            logger.error(f"Maximum number of retries reached. Aborting...")
+            sys.exit(1)
+
+        return self.cur_ack_num
 
     def shutdown_server(self):
         pass
+
+    def run(self):
+        self.establish_connection()
+        return
 
 
 def main():
@@ -212,13 +237,16 @@ def main():
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
     print("===============")
-    # validate_args(args, parser)
+
+    if not validate_args(args, is_client=False):
+        logger.error("Invalid arguments. Aborting...")
+        sys.exit(1)
 
     tcp_server = SimplexTCPServer(
         args.file, args.listening_port, args.address_for_acks, args.port_for_acks
     )
+    tcp_server.run()
 
-    tcp_server.establish_connection()
     return
 
 

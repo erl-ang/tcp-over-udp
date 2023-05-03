@@ -1,10 +1,13 @@
 import logging
 from typing import Set
+import sys
+import ipaddress
+import os
 
 logger = logging.getLogger("UTILS    ")
 logger.setLevel(logging.INFO)
 
-# To log on stdout, we create console handler with a higher log level, format it, 
+# To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
@@ -153,6 +156,66 @@ class SimplexTCPHeader:
         tcp_header[18:20] = 0x0000.to_bytes(2, byteorder="big")
 
         return tcp_header
+
+
+def validate_args(args, is_client=False):
+    """
+    Validates command line arguments for the TCP client and server.
+
+    Checks that the IP addresses are valid, port numbers are within the
+    valid range, and if the file to be sent exists.
+
+    :param arg: The command line arguments.
+    :param client: Whether the arguments are for the client or server.
+    """
+    # For both the client and server, validate whether the file exists
+    # in the file system.
+    file_path = args.file
+
+    if not os.path.exists(file_path):
+        logger.error("File does not exist.")
+        return False
+
+    # Group the port numbers and IP addresses together for validation.
+    port_nums = []
+    ip_addresses = []
+    if is_client:
+        port_nums.append(args.port_number_of_udpl)
+        port_nums.append(args.ack_port_number)
+        ip_addresses.append(args.address_of_udpl)
+    else:
+        port_nums.append(args.listening_port)
+        port_nums.append(args.port_for_acks)
+        ip_addresses.append(args.address_for_acks)
+
+    # IP addresses should be valid IPv4 or IPv6 addresses in dotted decimal
+    # notation. Note that even though localhost is a valid IP address, the ipaddress
+    # module will not recognize it.
+    for address in ip_addresses:
+        try:
+            ipaddress.ip_address(address)
+        except ValueError:
+            logger.error(
+                f"Invalid IP address {address}. Make sure the IP address is valid and in dotted decimal notation."
+            )
+            return False
+
+    # Port number should be an integer value in the range 1024-65535.
+    for port_num in port_nums:
+        if port_num < 1024 or port_num > 65535:
+            logger.error(
+                f"Invalid port number {port_num}. Port number should be an integer value in the range 1024-65535"
+            )
+            return False
+
+    # Window size should be a multiple of MSS.
+    if is_client:
+        if args.windowsize % 40 != 0:
+            logger.error(
+                f"Invalid window size {args.windowsize}. Window size should be a multiple of 40 bytes, the MSS"
+            )
+            return False
+    return True
 
 
 def calculate_checksum(segment: bytearray):
