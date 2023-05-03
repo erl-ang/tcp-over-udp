@@ -1,14 +1,6 @@
 import argparse
 from socket import *
-from utils import (
-    ACK_MASK,
-    RST_MASK,
-    SYN_MASK,
-    FIN_MASK,
-    SimplexTCPHeader,
-    calculate_checksum,
-    verify_checksum,
-)
+from utils import SimplexTCPHeader, calculate_checksum, verify_checksum, verify_flags
 import random
 import logging
 import struct
@@ -55,7 +47,7 @@ class SimplexTCPClient:
         self.socket = socket(AF_INET, SOCK_DGRAM)
         self.socket.bind(("", self.ack_port_number))
         return self.socket
-    
+
     def establish_connection(self):
         """
         Establishes a connection with the destination address.
@@ -63,6 +55,7 @@ class SimplexTCPClient:
         2. Receive SYNACK segment from server.
         3. Send ACK segment with payload.
         """
+        logger.info(f"Establishing connection with server...")
         # 1. Send SYN segment with no payload, SYN flag set, and random sequence number.
         # Generate random sequence number, which will be the client's ISN that will be incremented
         # for each segment sent.
@@ -77,13 +70,19 @@ class SimplexTCPClient:
             try:
                 # TODO: change buffer size
                 synack_segment, server_address = self.socket.recvfrom(2048)
-                if not verify_checksum(synack_segment): # TODO: make sure logging level sare consistent
+                if not verify_checksum(
+                    synack_segment
+                ):  # TODO: make sure logging level sare consistent
                     logger.error(f"Checksum verification failed for SYNACK segment")
                     continue
                 logger.info(f"Checksum verification passed for segment! SYNACK")
-                if not synack_segment[13] & SYN_MASK and synack_segment[13] & ACK_MASK:
+
+                if not verify_flags(
+                    flags_byte=synack_segment[13], expected_flags={"SYN", "ACK"}
+                ):
                     logger.error(f"SYNACK segment does not have SYN and ACK flag set")
                     continue
+                logger.info(f"Flag verification passed for segment!")
                 break
             except timeout:
                 # TODO: increase timeout acc. to formula in book.

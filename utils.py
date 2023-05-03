@@ -1,7 +1,7 @@
 import logging
 from typing import Set
 
-logger = logging.getLogger("UTILS")
+logger = logging.getLogger("UTILS    ")
 logger.setLevel(logging.INFO)
 
 # create console handler with a higher log level
@@ -15,6 +15,8 @@ ch.setFormatter(formatter)
 # add the handler to the logger
 logger.addHandler(ch)
 
+# Bit masks for the flags field in the TCP header
+# used to set and check the flags of segments transmitted.
 ACK_MASK = 0b00010000
 RST_MASK = 0b00001000
 SYN_MASK = 0b00000100
@@ -91,7 +93,6 @@ class SimplexTCPHeader:
         tcp_segment = self._make_tcp_header_without_checksum()
         tcp_segment.extend(payload)
         tcp_segment[16:18] = calculate_checksum(tcp_segment)
-        logger.info(f"Header created with checksum: {tcp_segment[16:18]}")
         return tcp_segment
 
     def _make_tcp_header_without_checksum(self):
@@ -200,13 +201,14 @@ def verify_checksum(segment):
     Verify the checksum of a segment to make sure no errors have been introduced.
     """
     segment_checksum = int.from_bytes(segment[16:18], byteorder="big")
-    logger.info(f"segment's checksum: {segment_checksum}")
+    logger.debug(f"segment's checksum: {segment_checksum}")
 
     # Set the checksum field to 0 so that the redone checksum calculation is aligns
     # with the original checksum calculation.
     segment = segment[:16] + b"\x00\x00" + segment[18:]
 
     calculated_checksum = int.from_bytes(calculate_checksum(segment), byteorder="big")
+    logger.debug(f"calculated checksum: {calculated_checksum}")
     # The following commented out section is deprecated:
     # calculated_checksum = ~calculated_checksum & 0xFFFF
 
@@ -218,3 +220,40 @@ def verify_checksum(segment):
     # calculated_checksum == 0xFFFF
 
     return calculated_checksum == segment_checksum
+
+
+def verify_flags(flags_byte, expected_flags=None):
+    """
+    Verify that the flags received match the expected flags by
+    parsing the 8-bit flags field in the TCP header.
+    """
+    # TODO: flags_bits is passed as an int, but it is actually a byte. This
+    #      should be fixed.
+    logger.info(
+        f"Checking if flags {expected_flags} match flags set in the received segment's header"
+    )
+
+    # If no expected flags are specified, then we assume that the flags are
+    # correct.
+    if not expected_flags:
+        return True
+
+    # Otherwise, we check that the flags are correct by checking if the
+    # flag bit is set in the TCP header for each expected flag.
+    if "ACK" in expected_flags:
+        if not flags_byte & ACK_MASK:
+            logger.error("Expected ACK but received message with ACK flag not set.")
+            return False
+    if "RST" in expected_flags:
+        if not flags_byte & RST_MASK:
+            logger.error("Expected RST but received message with RST flag not set.")
+            return False
+    if "SYN" in expected_flags:
+        if not flags_byte & SYN_MASK:
+            logger.error("Expected SYN but received message with SYN flag not set.")
+            return False
+    if "FIN" in expected_flags:
+        if not flags_byte & FIN_MASK:
+            logger.error("Expected FIN but received message with FIN flag not set.")
+            return False
+    return True
