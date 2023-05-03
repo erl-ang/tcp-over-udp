@@ -1,20 +1,22 @@
 import logging
 from typing import Set
+import sys
+import ipaddress
+import os
 
-logger = logging.getLogger("UTILS")
+logger = logging.getLogger("UTILS    ")
 logger.setLevel(logging.INFO)
 
-# create console handler with a higher log level
+# To log on stdout, we create console handler with a higher log level, format it,
+# and add the handler to logger.
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
-
-# create formatter and add it to the handler
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
-
-# add the handler to the logger
 logger.addHandler(ch)
 
+# Bit masks for the flags field in the TCP header
+# used to set and check the flags of segments transmitted.
 ACK_MASK = 0b00010000
 RST_MASK = 0b00001000
 SYN_MASK = 0b00000100
@@ -91,7 +93,6 @@ class SimplexTCPHeader:
         tcp_segment = self._make_tcp_header_without_checksum()
         tcp_segment.extend(payload)
         tcp_segment[16:18] = calculate_checksum(tcp_segment)
-        logger.info(f"Header created with checksum: {tcp_segment[16:18]}")
         return tcp_segment
 
     def _make_tcp_header_without_checksum(self):
@@ -157,6 +158,66 @@ class SimplexTCPHeader:
         return tcp_header
 
 
+def validate_args(args, is_client=False):
+    """
+    Validates command line arguments for the TCP client and server.
+
+    Checks that the IP addresses are valid, port numbers are within the
+    valid range, and if the file to be sent exists.
+
+    :param arg: The command line arguments.
+    :param client: Whether the arguments are for the client or server.
+    """
+    # For both the client and server, validate whether the file exists
+    # in the file system.
+    file_path = args.file
+
+    if not os.path.exists(file_path):
+        logger.error("File does not exist.")
+        return False
+
+    # Group the port numbers and IP addresses together for validation.
+    port_nums = []
+    ip_addresses = []
+    if is_client:
+        port_nums.append(args.port_number_of_udpl)
+        port_nums.append(args.ack_port_number)
+        ip_addresses.append(args.address_of_udpl)
+    else:
+        port_nums.append(args.listening_port)
+        port_nums.append(args.port_for_acks)
+        ip_addresses.append(args.address_for_acks)
+
+    # IP addresses should be valid IPv4 or IPv6 addresses in dotted decimal
+    # notation. Note that even though localhost is a valid IP address, the ipaddress
+    # module will not recognize it.
+    for address in ip_addresses:
+        try:
+            ipaddress.ip_address(address)
+        except ValueError:
+            logger.error(
+                f"Invalid IP address {address}. Make sure the IP address is valid and in dotted decimal notation."
+            )
+            return False
+
+    # Port number should be an integer value in the range 1024-65535.
+    for port_num in port_nums:
+        if port_num < 1024 or port_num > 65535:
+            logger.error(
+                f"Invalid port number {port_num}. Port number should be an integer value in the range 1024-65535"
+            )
+            return False
+
+    # Window size should be a multiple of MSS.
+    if is_client:
+        if args.windowsize % 40 != 0:
+            logger.error(
+                f"Invalid window size {args.windowsize}. Window size should be a multiple of 40 bytes, the MSS"
+            )
+            return False
+    return True
+
+
 def calculate_checksum(segment: bytearray):
     """
     Used to determine whether bits within a segment have been altered as the
@@ -200,13 +261,14 @@ def verify_checksum(segment):
     Verify the checksum of a segment to make sure no errors have been introduced.
     """
     segment_checksum = int.from_bytes(segment[16:18], byteorder="big")
-    logger.info(f"segment's checksum: {segment_checksum}")
+    logger.debug(f"segment's checksum: {segment_checksum}")
 
     # Set the checksum field to 0 so that the redone checksum calculation is aligns
     # with the original checksum calculation.
     segment = segment[:16] + b"\x00\x00" + segment[18:]
 
     calculated_checksum = int.from_bytes(calculate_checksum(segment), byteorder="big")
+    logger.debug(f"calculated checksum: {calculated_checksum}")
     # The following commented out section is deprecated:
     # calculated_checksum = ~calculated_checksum & 0xFFFF
 
@@ -218,3 +280,40 @@ def verify_checksum(segment):
     # calculated_checksum == 0xFFFF
 
     return calculated_checksum == segment_checksum
+
+
+def verify_flags(flags_byte, expected_flags=None):
+    """
+    Verify that the flags received match the expected flags by
+    parsing the 8-bit flags field in the TCP header.
+    """
+    # TODO: flags_bits is passed as an int, but it is actually a byte. This
+    #      should be fixed.
+    logger.info(
+        f"Checking if flags {expected_flags} match flags set in the received segment's header"
+    )
+
+    # If no expected flags are specified, then we assume that the flags are
+    # correct.
+    if not expected_flags:
+        return True
+
+    # Otherwise, we check that the flags are correct by checking if the
+    # flag bit is set in the TCP header for each expected flag.
+    if "ACK" in expected_flags:
+        if not flags_byte & ACK_MASK:
+            logger.error("Expected ACK but received message with ACK flag not set.")
+            return False
+    if "RST" in expected_flags:
+        if not flags_byte & RST_MASK:
+            logger.error("Expected RST but received message with RST flag not set.")
+            return False
+    if "SYN" in expected_flags:
+        if not flags_byte & SYN_MASK:
+            logger.error("Expected SYN but received message with SYN flag not set.")
+            return False
+    if "FIN" in expected_flags:
+        if not flags_byte & FIN_MASK:
+            logger.error("Expected FIN but received message with FIN flag not set.")
+            return False
+    return True
