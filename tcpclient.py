@@ -8,15 +8,12 @@ import struct
 logger = logging.getLogger("TCPClient")
 logger.setLevel(logging.INFO)
 
-# create console handler with a higher log level
+# To log on stdout, we create console handler with a higher log level, format it, 
+# and add the handler to logger.
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
-
-# create formatter and add it to the handler
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
-
-# add the handler to the logger
 logger.addHandler(ch)
 
 
