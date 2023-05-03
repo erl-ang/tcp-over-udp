@@ -113,7 +113,7 @@ class SimplexTCPClient:
                 logger.info(f"Flag verification passed for segment!")
 
                 # Check if the ACK number is correct.
-                ack_num = struct.unpack("!I", synack_segment[4:8])[0]
+                ack_num = struct.unpack("!I", synack_segment[8:12])[0]
                 if ack_num != self.client_isn + 1:
                     logger.error(
                         f"ACK number is incorrect, expected {self.client_isn + 1}, received: {ack_num}"
@@ -121,7 +121,7 @@ class SimplexTCPClient:
                     continue
 
                 # Stash the server's ISN for future use. This will be used to ACK the server's segments.
-                self.server_isn = struct.unpack("!I", synack_segment[8:12])[0]
+                self.server_isn = struct.unpack("!I", synack_segment[4:8])[0]
                 logger.info(
                     f"Received SYNACK segment from server with server ISN: {self.server_isn}"
                 )
