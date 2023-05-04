@@ -1,11 +1,18 @@
 import argparse
 from socket import *
-from utils import SimplexTCPHeader, verify_checksum, verify_flags, validate_args
+from utils import (
+    SimplexTCPHeader,
+    verify_checksum,
+    verify_flags,
+    validate_args,
+    unpack_segment,
+)
 import random
 import logging
 import struct
 import sys
 import os
+import traceback
 
 logger = logging.getLogger("TCPClient")
 logger.setLevel(logging.INFO)
@@ -67,8 +74,9 @@ class SimplexTCPClient:
         self._send_syn_and_wait_for_synack()
 
         # At this point, we have received a SYNACK segment from the server
+        # send ack with the filesize
         logger.info(
-            f"Entered ESTABLISHED state: received SYNACK segment from server and sent ACK"
+            f"almost ESTABLISHED state: received SYNACK segment from server, still need to ACK"
         )
         return
 
@@ -92,43 +100,61 @@ class SimplexTCPClient:
 
         while last_byte_acked < file_size:
 
-            # TODO: last_byte_sent - last_byte_acked = self.windowsize case?
-            while (
-                last_byte_sent - last_byte_acked < self.windowsize
-                and last_byte_sent < file_size
-            ):
-                payload = file.read(MSS)
+            # # TODO: last_byte_sent - last_byte_acked = self.windowsize case?
+            # while (
+            #     last_byte_sent - last_byte_acked < self.windowsize
+            #     and last_byte_sent < file_size
+            # ):
+            # TODO: pipelining
+            payload = file.read(MSS)
+            last_byte_sent += len(
+                payload
+            )  # explain why this is len(payload) and not MSS
 
-                # TODO:
-                #   sequence number = client_isn + last_byte_sent
-                #   ack number = server_isn + last_byte_acked
-                seq_num = self.client_isn + last_byte_sent
-                ack_num = self.server_isn + last_byte_acked
-                packet = self.create_tcp_segment(
-                    payload=payload, seq_num=seq_num, ack_num=ack_num, flags={"ACK"}
-                )
+            seq_num = self.client_isn + last_byte_sent
+            ack_num = self.server_isn + last_byte_acked
+            packet = self.create_tcp_segment(
+                payload=payload, seq_num=seq_num, ack_num=ack_num, flags={"ACK"}
+            )
+            self.socket.sendto(packet, self.proxy_address)
+            logger.info(
+                f"Sent packet with sequence number {seq_num} and ack number {ack_num}"
+            )
 
-            retry_count = 0
-            for _ in range(MAX_RETRIES + 1):
-                retry_count += 1
+            try:
+                ack, server_address = self.socket.recvfrom(MSS)
+                # TODO: from_bytes method
+                acked_byte = struct.unpack("!I", ack[8:12])[0]
+                if acked_byte > last_byte_acked:
+                    logger.info(f"Received ACK for byte {acked_byte}")
+                    last_byte_acked = acked_byte
+            except timeout:
+                logger.info(f"TODO timeout")
 
-                self.socket.sendto(packet, self.proxy_address)
-                logger.info(
-                    f"Sent packet with sequence number {seq_num} and ack number {ack_num}"
-                )
+            # TODO checksum verification, flag verification, etc.
+            # Verify the ack num, discard OOO packets
 
-                try:
-                    ack, server_address = self.socket.recvfrom(MSS)
-                    acked_byte = struct.unpack("!I", ack[8:12])[
-                        0
-                    ]  # TODO abstract this out
+            # retry_count = 0
+            # for _ in range(MAX_RETRIES + 1):
+            #     retry_count += 1
 
-                    # Ignoring OOO packets
-                    if acked_byte > last_byte_acked:
-                        last_byte_acked = acked_byte
-                except timeout:
+            #     self.socket.sendto(packet, self.proxy_address)
+            #     logger.info(
+            #         f"Sent packet with sequence number {seq_num} and ack number {ack_num}"
+            #     )
 
-                    continue
+            #     try:
+            #         ack, server_address = self.socket.recvfrom(MSS)
+            #         acked_byte = struct.unpack("!I", ack[8:12])[
+            #             0
+            #         ]  # TODO abstract this out
+
+            #         # Ignoring OOO packets
+            #         if acked_byte > last_byte_acked:
+            #             last_byte_acked = acked_byte
+            #     except timeout:
+
+            #         continue
         # The windowsize is used to give the sender an idea of how much free buffer space
         # is available at the receiver. Both the sender and receiver maintain a variable
         # maintain a distinct receive window.
@@ -161,7 +187,11 @@ class SimplexTCPClient:
 
             try:
                 # TODO: change buffer size
+
                 synack_segment, server_address = self.socket.recvfrom(2048)
+
+                seq_num, ack_num, flags, recv_window, _ = unpack_segment(synack_segment)
+
                 if not verify_checksum(
                     synack_segment
                 ):  # TODO: make sure logging level sare consistent
@@ -169,15 +199,13 @@ class SimplexTCPClient:
                     continue
                 logger.info(f"Checksum verification passed for segment! SYNACK")
 
-                if not verify_flags(
-                    flags_byte=synack_segment[13], expected_flags={"SYN", "ACK"}
-                ):
+                if not verify_flags(flags_byte=flags, expected_flags={"SYN", "ACK"}):
                     logger.error(f"SYNACK segment does not have SYN and ACK flag set")
                     continue
                 logger.info(f"Flag verification passed for segment!")
 
                 # Check if the ACK number is correct.
-                ack_num = struct.unpack("!I", synack_segment[8:12])[0]
+                # ack_num = struct.unpack("!I", synack_segment[8:12])[0]
                 if ack_num != self.client_isn + 1:
                     logger.error(
                         f"ACK number is incorrect, expected {self.client_isn + 1}, received: {ack_num}"
@@ -185,7 +213,7 @@ class SimplexTCPClient:
                     continue
 
                 # Stash the server's ISN for future use. This will be used to ACK the server's segments.
-                self.server_isn = struct.unpack("!I", synack_segment[4:8])[0]
+                self.server_isn = seq_num
                 logger.info(
                     f"Received SYNACK segment from server with server ISN: {self.server_isn}"
                 )
@@ -198,6 +226,7 @@ class SimplexTCPClient:
                 logger.warning(
                     f"Exception occurred while receiving SYNACK segment: {e}"
                 )
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 continue
 
         if retry_count > MAX_RETRIES:
@@ -229,9 +258,14 @@ class SimplexTCPClient:
 
         return tcp_segment
 
-    def shutdown_client(self):
-        """ """
+    def shutdown(self):
+        """
+        Close all open sockets and files.
+        """
         self.socket.close()
+        # TODO close file, maybe instance variable for file?
+
+        logger.info(f"Shutting down client...")
         return
 
     def run(self):

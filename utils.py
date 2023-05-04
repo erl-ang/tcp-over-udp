@@ -3,6 +3,7 @@ from typing import Set
 import sys
 import ipaddress
 import os
+import struct
 
 logger = logging.getLogger("UTILS    ")
 logger.setLevel(logging.INFO)
@@ -21,6 +22,9 @@ ACK_MASK = 0b00010000
 RST_MASK = 0b00001000
 SYN_MASK = 0b00000100
 FIN_MASK = 0b00000010
+
+# TODO: make it so you only change one of these MSS's across files
+MSS = 40
 
 
 class SimplexTCPHeader:
@@ -158,6 +162,31 @@ class SimplexTCPHeader:
         return tcp_header
 
 
+def unpack_segment(segment):
+    """
+    Break the TCP segment into its constituent fields.
+
+    Only extracts the fields necessary for this application,
+    which are the sequence number, acknowledgement number,
+    flags, recv_window, and payload. The checksum is not
+    unpacked from the rest of the segment as it must be computed
+    over the entire segment anyway.
+
+    :param segment: The TCP segment to unpack.
+    """
+    # TODO: make the extraction of fields consistent, can specify a format
+    # string for the struct.unpack function.
+    # Extract the fields from the TCP header.
+    header = segment[:20]
+    seq_num = struct.unpack("!I", header[4:8])[0]
+    ack_num = struct.unpack("!I", header[8:12])[0]
+    flags = header[13]
+    recv_window = int.from_bytes(header[14:16], byteorder="big")
+
+    payload = segment[20:]
+    return seq_num, ack_num, flags, recv_window, payload
+
+
 def validate_args(args, is_client=False):
     """
     Validates command line arguments for the TCP client and server.
@@ -210,7 +239,7 @@ def validate_args(args, is_client=False):
 
     # Window size should be a multiple of MSS.
     if is_client:
-        if args.windowsize % 40 != 0:
+        if args.windowsize % MSS != 0:
             logger.error(
                 f"Invalid window size {args.windowsize}. Window size should be a multiple of 40 bytes, the MSS"
             )
