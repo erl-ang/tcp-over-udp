@@ -44,7 +44,8 @@ class SimplexTCPServer:
         logger.info(f"Socket created and bound to port {self.listening_port}")
 
         self.client_isn = -1
-        self.server_isn = random.randint(0, 2**32 - 1)
+        self.server_isn = 0
+        # self.server_isn = random.randint(0, 2**32 - 1)
         return
 
     def create_and_bind_socket(self):
@@ -64,7 +65,7 @@ class SimplexTCPServer:
         """
         # Create the segment without the checksum. Increment the ack number,
         # indicating that the server is expecting the ack_num + 1 byte next
-        logger.info(f"Sending segment with ack number {ack_num}")
+        logger.info(f"Sending segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and flags {flags}")
 
         tcp_segment = SimplexTCPHeader(
             src_port=self.listening_port,
@@ -77,9 +78,9 @@ class SimplexTCPServer:
 
         # Attach the TCP header to payload.
         tcp_header = tcp_segment.make_tcp_header(payload)
-        tcp_segment = tcp_header + payload
-
-        return tcp_segment
+        
+        # TODO: change naming. This is actually the segment, not just the header.
+        return tcp_header
 
     def receive_file(self):
         """
@@ -139,11 +140,14 @@ class SimplexTCPServer:
         logger.info(f"Sending SYNACK segment to client...")
 
         # The ACK will contain the file size
-        self.file_size = self._send_and_wait_for_ack(
+        payload = self._send_and_wait_for_ack(
             payload=b"", flags={"SYN", "ACK"}, expected_flags={"ACK"}
         )
+        self.file_size = int.from_bytes(payload, byteorder="big")
+        
+        # need to send ACK back to client
 
-        logger.info(f"Established connection with client!")
+        logger.info(f"Established connection with client! file_size: {self.file_size}")
         return
 
     def _send_and_wait_for_ack(self, payload, flags=None, expected_flags=None):
@@ -175,27 +179,27 @@ class SimplexTCPServer:
             logger.info(f"Segment sent!")
 
             try:
-                message, client_address = self.socket.recvfrom(2048)
-
+                segment, client_address = self.socket.recvfrom(2048)
+                # Unpack the segment and extract the payload.
+                seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
+                logger.info(f"received segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and payload {payload}")
                 # Determine whether bits within the segment are corrupted. This
                 # could occur due to noise in the links, malicious attackers, etc.
                 # If the segment is corrupted, ignore it.
-                if not verify_checksum(segment=message):
+                if not verify_checksum(segment=segment):
                     logger.error("Checksum verification failed. Ignoring segment.")
                     continue
-                logger.info(f"Checksum verification passed for segment!")
+                logger.debug(f"Checksum verification passed for segment!")
 
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
                 if not verify_flags(
-                    flags_byte=message[13], expected_flags=expected_flags
+                    flags_byte=flags, expected_flags=expected_flags
                 ):
                     logger.error(f"Received segment with unexpected flags.")
                     continue
-                logger.info(f"Flag verification passed for segment!")
-
-                # Extract the payload from the segment.
-                payload = message[20:].decode()
+                logger.debug(f"Flag verification passed for segment!")
+                
                 break
             except timeout:
                 logger.info(f"Timeout occurred while waiting for ACK. Retrying...")
@@ -208,7 +212,7 @@ class SimplexTCPServer:
         if retry_count > MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
             sys.exit(1)
-
+        
         return payload
 
     def _listen_for_syn(self):
@@ -235,8 +239,9 @@ class SimplexTCPServer:
 
             try:
                 syn_segment, client_address = self.socket.recvfrom(40)
-                
+
                 seq_num, _, flags, recv_window, _ = unpack_segment(syn_segment)
+                logger.info(f"received segment with seq number {seq_num}, and flags {flags}")
 
                 # Determine whether bits within the segment are corrupted. This
                 # could occur due to noise in the links, malicious attackers, etc.
@@ -244,7 +249,7 @@ class SimplexTCPServer:
                 if not verify_checksum(segment=syn_segment):
                     logger.error("Checksum verification failed. Ignoring segment.")
                     continue
-                logger.info(f"Checksum verification passed for segment!")
+                logger.debug(f"Checksum verification passed for segment!")
 
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
@@ -253,8 +258,7 @@ class SimplexTCPServer:
                         f"Received segment with SYN flag not set. Ignoring. Message: {syn_segment.decode()}"
                     )
                     continue
-                logger.info(f"Flag verification passed for segment!")
-
+                logger.debug(f"Flag verification passed for segment!")
 
                 self.client_isn = seq_num
                 logger.info(f"SYN segment received with client ISN: {self.client_isn}")

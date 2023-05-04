@@ -94,9 +94,12 @@ class SimplexTCPHeader:
         Note that the checksum is computed over the entire segment, including
         the TCP header (with the checksum field set to 0) and the payload.
         """
+        # TODO: change naming to tcp_header
         tcp_segment = self._make_tcp_header_without_checksum()
         tcp_segment.extend(payload)
         tcp_segment[16:18] = calculate_checksum(tcp_segment)
+        logger.debug(f"Putting checksum in header: {int.from_bytes(tcp_segment[16:18], byteorder='big')}")
+        
         return tcp_segment
 
     def _make_tcp_header_without_checksum(self):
@@ -176,6 +179,7 @@ def unpack_segment(segment):
     """
     # TODO: make the extraction of fields consistent, can specify a format
     # string for the struct.unpack function.
+
     # Extract the fields from the TCP header.
     header = segment[:20]
     seq_num = struct.unpack("!I", header[4:8])[0]
@@ -318,7 +322,7 @@ def verify_flags(flags_byte, expected_flags=None):
     """
     # TODO: flags_bits is passed as an int, but it is actually a byte. This
     #      should be fixed.
-    logger.info(
+    logger.debug(
         f"Checking if flags {expected_flags} match flags set in the received segment's header"
     )
 

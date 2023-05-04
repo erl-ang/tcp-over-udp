@@ -49,11 +49,12 @@ class SimplexTCPClient:
         self.socket = self.create_and_bind_socket()
         logger.info(f"Socket created and bound to port {self.ack_port_number}")
 
-        # Initialize TCP state variables
-        self.client_isn = 0
+        # Initialize TCP state variables. Typically, this is done in the
+        # three-way handshake, but they are provided here for readability.
+        self.client_isn = -1
         self.timeout = 0.5
         self.socket.settimeout(0.5)
-        self.server_isn = 0
+        self.server_isn = -1
 
     def create_and_bind_socket(self):
         """
@@ -68,15 +69,22 @@ class SimplexTCPClient:
         Establishes a connection with the destination address.
         1. Send SYN segment with random sequence number and no payload.
         2. Receive SYNACK segment from server.
-        3. Send ACK segment with payload.
+        3. Send ACK segment with payload containing the file_size of the file to be transferred.
         """
         logger.info(f"Establishing connection with server...")
         self._send_syn_and_wait_for_synack()
 
-        # At this point, we have received a SYNACK segment from the server
-        # send ack with the filesize
+        # At this point, we have received a SYNACK segment from the server. After the client
+        # sends the ACK segment, the client enters the CONNECTION_ESTABLISHED state. However,
+        # because the server doesn't enter the CONNECTION_ESTABLISHED state until it receives
+        # this just-sent ACK, there is a brief period of time where the connection is half-open.
+        # During this time, this packet is still vulnerable to being dropped. To prevent a half-open
+        # connection and to provide the server with additional data needed for the file transfer,
+        # the client sends the file_size in the ACK segment and waits for an ACK from the server
+        # with the same timeout mechanism as any other packet.
+        self._send_ack_with_filesize()
         logger.info(
-            f"almost ESTABLISHED state: received SYNACK segment from server, still need to ACK"
+            f"ESTABLISHED!"
         )
         return
 
@@ -89,8 +97,8 @@ class SimplexTCPClient:
 
         # Send the specified file to the server in chunks of MSS bytes. Stop sending when
         # the server's receive window is full.
-        file = open(self.file, "rb")
-        file_size = os.path.getsize(self.file)
+        # file = open(self.file, "rb")
+        # file_size = os.path.getsize(self.file)
 
         # Keep track of last_byte_sent and last_byte_acked. To make sure that the client
         # is not overflowing the receive buffer of the server, the client makes sure that
@@ -161,13 +169,87 @@ class SimplexTCPClient:
 
         return
 
+    def _send_ack_with_filesize(self):
+        """
+        Send an ACK segment with the file size to the server and wait for an ACK from the server.
+        
+        This mechanism is to prevent a half-open connection if the last ACK of the three-way
+        handshake gets lost. While the server will timeout waiting for its SYNACK to be ACK'd,
+        the client will think that the connection is established and start sending data. By waiting
+        for an additional ACK, we can ensure that the connection is fully established before
+        sending file data.
+        """
+        # Create a TCP segment with the ACK flag set and the file size as the payload.
+        file = open(self.file, "rb") # TODO: error handling with opening file.
+        file_size = os.path.getsize(self.file)
+        print(file_size)
+        payload = file_size.to_bytes(4, byteorder="big")
+        file.close()
+        
+        segment = self.create_tcp_segment(
+            payload=payload, seq_num=(self.client_isn + len(payload)), ack_num=(self.server_isn + 1), flags={"ACK"}
+        )
+
+        # Keep track of the number of retries so we can differentiate between a successful
+        # retransmission and reaching the maximum number of retries.
+        retry_count = 0
+
+        for _ in range(MAX_RETRIES + 1):
+            retry_count += 1
+            self.socket.sendto(segment, self.proxy_address)
+            logger.info(f"Entered CONNECTION ESTABLISHED state: sent ACK with file size")
+
+            try:
+                ack, server_address = self.socket.recvfrom(2048)
+
+                seq_num, ack_num, flags, _, _ = unpack_segment(ack)
+                logger.info(f"received segment with ack number {ack_num}, flags {flags}, and sequence number {seq_num}")
+
+                if not verify_checksum(
+                    ack
+                ):  # TODO: make sure logging level sare consistent
+                    logger.error(f"Checksum verification failed.")
+                    continue
+                logger.debug(f"Checksum verification passed for segment!")
+
+                if not verify_flags(flags_byte=flags, expected_flags={"ACK"}):
+                    logger.error(f"Flag verification failed.")
+                    continue
+                logger.debug(f"Flag verification passed for segment!")
+
+                # Check if the ACK number is correct.
+                if ack_num != self.client_isn + len(payload):
+                    logger.error(
+                        f"ACK number is incorrect, expected {self.client_isn + len(payload)}, received: {ack_num}"
+                    )
+                    continue
+
+                break
+            except timeout:
+                # TODO: increase timeout acc. to formula in book.
+                logger.info(f"Timeout occurred while finishing handshake.")
+                continue
+            except Exception as e:
+                logger.warning(
+                    f"Exception occurred while finishing handshake: {e}"
+                )
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                continue
+
+        if retry_count > MAX_RETRIES:
+            logger.error(f"Maximum number of retries reached. Aborting...")
+            sys.exit(1)
+
+        return
+
     def _send_syn_and_wait_for_synack(self):
         """
         Send SYN segment with no payload, SYN flag set, and random sequence number.
         Generate random sequence number, which will be the client's ISN that will be incremented
         for each segment sent.
         """
-        self.client_isn = random.randint(0, 2**32 - 1)
+        # self.client_isn = random.randint(0, 2**32 - 1)
+        self.client_isn = 0
         logger.info(f"Client ISN: {self.client_isn}")
 
         # Create SYN segment with no payload, SYN flag set, and random sequence number. We
@@ -190,7 +272,9 @@ class SimplexTCPClient:
 
                 synack_segment, server_address = self.socket.recvfrom(2048)
 
-                seq_num, ack_num, flags, recv_window, _ = unpack_segment(synack_segment)
+                seq_num, ack_num, flags, _, _ = unpack_segment(synack_segment)
+                logger.info(f"received segment with seq number {seq_num}, and flags {flags}")
+
 
                 if not verify_checksum(
                     synack_segment
@@ -205,7 +289,6 @@ class SimplexTCPClient:
                 logger.info(f"Flag verification passed for segment!")
 
                 # Check if the ACK number is correct.
-                # ack_num = struct.unpack("!I", synack_segment[8:12])[0]
                 if ack_num != self.client_isn + 1:
                     logger.error(
                         f"ACK number is incorrect, expected {self.client_isn + 1}, received: {ack_num}"
@@ -242,6 +325,8 @@ class SimplexTCPClient:
         :param payload: payload to be sent to the server
         :param flags: set of flags to be set in the TCP header
         """
+        logger.info(f"Sending segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and flags {flags}")
+
         # Create the segment without the checksum.
         tcp_segment = SimplexTCPHeader(
             src_port=self.ack_port_number,
@@ -254,9 +339,9 @@ class SimplexTCPClient:
 
         # Attach the TCP header to payload.
         tcp_header = tcp_segment.make_tcp_header(payload)
-        tcp_segment = tcp_header + payload
-
-        return tcp_segment
+        
+        # TODO: naming is a bit confusing. tcp_header is actually the entire segment.
+        return tcp_header
 
     def shutdown(self):
         """
