@@ -45,6 +45,7 @@ class SimplexTCPServer:
 
         self.client_isn = -1
         self.server_isn = 0
+        self.expected_ack_num = -1
         # self.server_isn = random.randint(0, 2**32 - 1)
         return
 
@@ -65,7 +66,9 @@ class SimplexTCPServer:
         """
         # Create the segment without the checksum. Increment the ack number,
         # indicating that the server is expecting the ack_num + 1 byte next
-        logger.info(f"Sending segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and flags {flags}")
+        logger.info(
+            f"Sending segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and flags {flags}"
+        )
 
         tcp_segment = SimplexTCPHeader(
             src_port=self.listening_port,
@@ -78,7 +81,7 @@ class SimplexTCPServer:
 
         # Attach the TCP header to payload.
         tcp_header = tcp_segment.make_tcp_header(payload)
-        
+
         # TODO: change naming. This is actually the segment, not just the header.
         return tcp_header
 
@@ -144,8 +147,16 @@ class SimplexTCPServer:
             payload=b"", flags={"SYN", "ACK"}, expected_flags={"ACK"}
         )
         self.file_size = int.from_bytes(payload, byteorder="big")
-        
-        # need to send ACK back to client
+
+        # Need to send ACK back to client. This is reliable because it is not sent over
+        # the network.
+        ack_segment = self.create_tcp_segment(
+            payload=b"",
+            seq_num=self.server_isn + 1,
+            ack_num=self.client_isn + 1 + len(payload),
+            flags={"ACK"},
+        )
+        self.socket.sendto(ack_segment, self.client_address)
 
         logger.info(f"Established connection with client! file_size: {self.file_size}")
         return
@@ -182,7 +193,9 @@ class SimplexTCPServer:
                 segment, client_address = self.socket.recvfrom(2048)
                 # Unpack the segment and extract the payload.
                 seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
-                logger.info(f"received segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and payload {payload}")
+                logger.info(
+                    f"received segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and payload {payload}"
+                )
                 # Determine whether bits within the segment are corrupted. This
                 # could occur due to noise in the links, malicious attackers, etc.
                 # If the segment is corrupted, ignore it.
@@ -193,13 +206,11 @@ class SimplexTCPServer:
 
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
-                if not verify_flags(
-                    flags_byte=flags, expected_flags=expected_flags
-                ):
+                if not verify_flags(flags_byte=flags, expected_flags=expected_flags):
                     logger.error(f"Received segment with unexpected flags.")
                     continue
                 logger.debug(f"Flag verification passed for segment!")
-                
+
                 break
             except timeout:
                 logger.info(f"Timeout occurred while waiting for ACK. Retrying...")
@@ -212,7 +223,7 @@ class SimplexTCPServer:
         if retry_count > MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
             sys.exit(1)
-        
+
         return payload
 
     def _listen_for_syn(self):
@@ -241,7 +252,9 @@ class SimplexTCPServer:
                 syn_segment, client_address = self.socket.recvfrom(40)
 
                 seq_num, _, flags, recv_window, _ = unpack_segment(syn_segment)
-                logger.info(f"received segment with seq number {seq_num}, and flags {flags}")
+                logger.info(
+                    f"received segment with seq number {seq_num}, and flags {flags}"
+                )
 
                 # Determine whether bits within the segment are corrupted. This
                 # could occur due to noise in the links, malicious attackers, etc.

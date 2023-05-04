@@ -98,8 +98,10 @@ class SimplexTCPHeader:
         tcp_segment = self._make_tcp_header_without_checksum()
         tcp_segment.extend(payload)
         tcp_segment[16:18] = calculate_checksum(tcp_segment)
-        logger.debug(f"Putting checksum in header: {int.from_bytes(tcp_segment[16:18], byteorder='big')}")
-        
+        logger.debug(
+            f"Putting checksum in header: {int.from_bytes(tcp_segment[16:18], byteorder='big')}"
+        )
+
         return tcp_segment
 
     def _make_tcp_header_without_checksum(self):
