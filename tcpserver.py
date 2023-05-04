@@ -90,42 +90,51 @@ class SimplexTCPServer:
         Receives the requested file from the client with TCP flow control.
         """
 
-        # Easy version:
-        file = open(self.file, "wb")
+        # Open the output file for writing. Keep writing data to the file until
+        # the server has received all the data from the client.
+        file = None
+        try:
+            file = open(f"{self.file}_copy", "wb")
+        except IOError:
+            logger.error(f"Could not open file {self.file}")  # TODO change to filenmae
+            # self.shutdown()
+            sys.exit(1)
+
         last_byte_read = 0
         last_byte_received = 0
 
-        segment, client_address = self.socket.recvfrom(MSS)
+        # Listen for segments from the client and keep track of the next in-order
+        # seqeunce number. After receiving a segment, validate that this segment
+        # has this sequence number. If it does, write the payload to the file and
+        # send an ACK. If it does not, discard the segment and send an ACK. In both cases,
+        # the ACK will contain the next expected sequence number.
+        seq_num = self.server_isn + 1
+        payload = None
+        while last_byte_read < self.file_size:
+            try:
+                segment, client_address = self.socket.recvfrom(2048)  # catch timeout
+            except timeout:
+                logger.warning(f"Timeout occured receiving data. Retrying...")
+                continue
 
-        seq_num, ack_num, flags, recv_window, payload = unpack_segment(packet)
-        last_byte_read = len(payload)
+            seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
+            # Discard the segment if out of order.
 
-        file.write(payload)
+            last_byte_read += len(payload)
+            file.write(payload)
+            seq_num += 1
 
-        # Send ACK
-        ack = self.create_tcp_segment(
-            payload=b"",
-            seq_num=(self.server_isn + 1),
-            ack_num=(self.client_isn + last_byte_read),
-            flags={"ACK"},
-        )
-        self.socket.sendto(ack, client_address)
-
-        # Allocate a receive buffer for teh connection of size recv_buffer
-
-        # Occassionally read from the buffer. last_byte_read indicates the number
-        # of the last byte in the data stream read from the buffer by the server.
-        # last_byte_recieved denotes the number of hte last byte in the data stream
-        # that has arrived from the network adn has been placed in the server's receive
-        # buffer.
-
-        # At all times, last_byte_received - last_byte_read <= recv_buffer because TCP
-        # is not permitted to overflow the allocated buffer.
-
-        # rwnd, the receive window, is the amount of space left in the receive buffer.
-        # rwnd = recv_buffer - (last_byte_received - last_byte_read)
-
-        pass
+            ack = self.create_tcp_segment(
+                payload=b"",
+                seq_num=seq_num,
+                ack_num=(self.client_isn + 4 + 1 + last_byte_read),
+                flags={"ACK"},
+            )
+            self.socket.sendto(ack, self.client_address)
+        logger.info(f"last payload: {payload.decode()}")
+        logger.info(f"File received. Closing connection...")
+        file.close()
+        return
 
     def establish_connection(self):
         """
@@ -161,7 +170,7 @@ class SimplexTCPServer:
         logger.info(f"Established connection with client! file_size: {self.file_size}")
         return
 
-    def _send_and_wait_for_ack(self, payload, flags=None, expected_flags=None):
+    def _send_and_wait_for_ack(self, payload, flags=set(), expected_flags=set()):
         """
         Keep sending TCP segments encapsulated in a UDP segment
         until we receive the ACK segment we are expecting.
@@ -298,6 +307,7 @@ class SimplexTCPServer:
 
     def run(self):
         self.establish_connection()
+        self.receive_file()
         return
 
 
