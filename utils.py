@@ -3,6 +3,7 @@ from typing import Set
 import sys
 import ipaddress
 import os
+import struct
 
 logger = logging.getLogger("UTILS    ")
 logger.setLevel(logging.INFO)
@@ -21,6 +22,15 @@ ACK_MASK = 0b00010000
 RST_MASK = 0b00001000
 SYN_MASK = 0b00000100
 FIN_MASK = 0b00000010
+
+# Maximum segment size (MSS) is the maximum amount of data that can be carried in a single
+# TCP segment. The MSS is specified during the initial connection setup.
+MSS = 40
+
+# Implementations of TCP usually have a maximum number of retransmissions for a segment.
+# 5-7 is a common valid.
+MAX_RETRIES = 6
+INITIAL_TIMEOUT = 0.5
 
 
 class SimplexTCPHeader:
@@ -90,9 +100,14 @@ class SimplexTCPHeader:
         Note that the checksum is computed over the entire segment, including
         the TCP header (with the checksum field set to 0) and the payload.
         """
+        # TODO: change naming to tcp_header
         tcp_segment = self._make_tcp_header_without_checksum()
         tcp_segment.extend(payload)
         tcp_segment[16:18] = calculate_checksum(tcp_segment)
+        logger.debug(
+            f"Putting checksum in header: {int.from_bytes(tcp_segment[16:18], byteorder='big')}"
+        )
+
         return tcp_segment
 
     def _make_tcp_header_without_checksum(self):
@@ -158,6 +173,32 @@ class SimplexTCPHeader:
         return tcp_header
 
 
+def unpack_segment(segment):
+    """
+    Break the TCP segment into its constituent fields.
+
+    Only extracts the fields necessary for this application,
+    which are the sequence number, acknowledgement number,
+    flags, recv_window, and payload. The checksum is not
+    unpacked from the rest of the segment as it must be computed
+    over the entire segment anyway.
+
+    :param segment: The TCP segment to unpack.
+    """
+    # TODO: make the extraction of fields consistent, can specify a format
+    # string for the struct.unpack function.
+
+    # Extract the fields from the TCP header.
+    header = segment[:20]
+    seq_num = struct.unpack("!I", header[4:8])[0]
+    ack_num = struct.unpack("!I", header[8:12])[0]
+    flags = header[13]
+    recv_window = int.from_bytes(header[14:16], byteorder="big")
+
+    payload = segment[20:]
+    return seq_num, ack_num, flags, recv_window, payload
+
+
 def validate_args(args, is_client=False):
     """
     Validates command line arguments for the TCP client and server.
@@ -210,7 +251,7 @@ def validate_args(args, is_client=False):
 
     # Window size should be a multiple of MSS.
     if is_client:
-        if args.windowsize % 40 != 0:
+        if args.windowsize % MSS != 0:
             logger.error(
                 f"Invalid window size {args.windowsize}. Window size should be a multiple of 40 bytes, the MSS"
             )
@@ -231,18 +272,19 @@ def calculate_checksum(segment: bytearray):
 
     1s complement is obtained by flipping all the bits in a number.
     """
-    # Ensure segment's length is a multiple of 2 bytes by padding a 0 byte.
+    # Ensure segment's length is a multiple of 2 bytes by padding a 0 byte onto a copy.
+    segment_copy = bytearray(segment)
     if len(segment) % 2 == 1:
         logging.info(f"Segment length is {len(segment)} bytes, padding with 0 byte.")
-        segment.extend(b"\x00")
+        segment_copy.extend(b"\x00")
 
     # Calculate the sum of all the 16-bit words in the segment. We
     # iterate over every other byte because a 16-bit word is 2 bytes.
     checksum = 0
-    for i in range(0, len(segment), 2):
+    for i in range(0, len(segment_copy), 2):
 
         # Convert the 2 bytes into a 16-bit word so we can add it to the sum.
-        word = (segment[i] << 8) + segment[i + 1]
+        word = (segment_copy[i] << 8) + segment_copy[i + 1]
         checksum += word
 
         # Wrap around if overflow occurs. To implement this, we need to zero
@@ -289,7 +331,7 @@ def verify_flags(flags_byte, expected_flags=None):
     """
     # TODO: flags_bits is passed as an int, but it is actually a byte. This
     #      should be fixed.
-    logger.info(
+    logger.debug(
         f"Checking if flags {expected_flags} match flags set in the received segment's header"
     )
 
