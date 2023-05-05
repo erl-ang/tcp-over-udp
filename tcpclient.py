@@ -3,7 +3,7 @@ from socket import *
 from utils import (
     SimplexTCPHeader,
     verify_checksum,
-    verify_flags,
+    are_flags_set,
     validate_args,
     unpack_segment,
     MSS,
@@ -37,8 +37,8 @@ logger.addHandler(fh)
 # The client waits TIME_WAIT seconds before closing the connection after receiving
 # a FIN from the server.
 # Typical values are 30 seconds, 1 minute, and 2 minutes. I keep
-# at 15 seconds so I don't have to wait too long.
-TIME_WAIT = 20
+# at 5 seconds so I don't have to wait too long.
+TIME_WAIT = 5
 
 
 class SimplexTCPClient:
@@ -145,7 +145,7 @@ class SimplexTCPClient:
                 )  # do i change this to windowsize?
                 _, _, flags, _, _ = unpack_segment(fin_ack)
 
-                if not verify_checksum(fin_ack) or not verify_flags(
+                if not verify_checksum(fin_ack) or not are_flags_set(
                     flags, {"ACK", "FIN"}
                 ):
                     logger.error(f"Verification failed. Dropping packet...")
@@ -184,7 +184,7 @@ class SimplexTCPClient:
 
                 # Verify this is a FIN segment.
                 _, _, flags, _, _ = unpack_segment(fin_segment)
-                if not verify_checksum(fin_segment) and not verify_flags(
+                if not verify_checksum(fin_segment) and not are_flags_set(
                     flags, {"FIN"}
                 ):
                     logger.error(f"Verification failed. Dropping packet...")
@@ -217,14 +217,14 @@ class SimplexTCPClient:
         """
         # Send base denotes the sequence number of the oldest unacknowledged segment.
         # This is initialized to TODO
+        # Window is a list of segments that have been sent but not yet acknowledged, along with
+        # the number of times they have been retransmitted. num_retries is initialized to 0.
+        # When a segment hits max_retries, send_fin() is called to terminate the connection as
+        # the network is probably pretty ass at the moment.
+        #   Format: [(segment, num_retries), ...]
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
         window = []
-
-        # TODO: change window to list of tuples (segment, num_retries)
-        # Format: {segment: num_retries}. This is the window of segments that have been sent but not yet acknowledged.
-        # When a segment hits max_retries, send_fin() to terminate the connection as
-        # the network is really ass then.
 
         logger.info(f"Sending file {self.file} to server...")
         with open(self.file, "rb") as file:
@@ -236,8 +236,6 @@ class SimplexTCPClient:
                 # Don't increment the file pointer unless we are sending a new payload.
                 if sent_new_payload and not done_reading:
                     payload = file.read(MSS)
-
-                # logger.info(f"current payload: {payload}")
 
                 # Payload will be empty when we reach the end of the file.
                 if not payload:
@@ -258,7 +256,7 @@ class SimplexTCPClient:
 
                     self.socket.sendto(segment, self.proxy_address)
                     sent_new_payload = True
-                    window.append(segment)
+                    window.append((segment, 0))
                     next_seq_num += 1
                 else:
                     sent_new_payload = False
@@ -270,7 +268,7 @@ class SimplexTCPClient:
                                 f"Received ACK {ack_num}. Moving window forward to [{ack_num + 1}, {next_seq_num - 1}]"
                             )
                             logger.info(
-                                f"removing segment with payload {window[0][20:]}"
+                                f"removing segment with payload {window[0][0][20:]}"
                             )
                             window.pop(0)
                             send_base = ack_num + 1
@@ -279,11 +277,26 @@ class SimplexTCPClient:
                                 f"Received duplicate ACK with ack_num {ack_num}. Expecting ack_num {send_base}."
                             )
                     except timeout:
-                        # If the timer expires, then resend all segments in the window.
+                        # If the timer expires, then resend all segments in the window and increment
+                        # their retry count.
                         logger.warning(
                             f"Timeout expired. Resending all segments in window [send_base, nextseqnum -1]: [{send_base}, {next_seq_num - 1}]..."
                         )
-                        for segment in window:
+                        
+                        # If the segment hit the retransmission limit for a packet, then terminate
+                        # the connection.
+                        for i in range(len(window)):
+                            segment, num_retries = window[i]
+                            num_retries+=1
+                            print(f"num_retries: {num_retries}")
+                            
+                            if num_retries >= MAX_RETRIES: 
+                                logger.warning(f"Max retransmissions reached. Terminating connection...")
+                                self.send_fin()
+                            window[i] = (segment, num_retries)
+                        
+                        # Otherwise, resend all the segments and increment their retry counts
+                        for segment, num_retries in window:
                             logger.info(
                                 f"resending segment with payload {segment[20:]}"
                             )
@@ -335,7 +348,7 @@ class SimplexTCPClient:
                 if not verify_checksum(ack):
                     logger.error(f"Checksum verification failed.")
                     continue
-                if not verify_flags(flags_byte=flags, expected_flags={"ACK"}):
+                if not are_flags_set(flags_byte=flags, expected_flags={"ACK"}):
                     logger.error(f"Flag verification failed.")
                     continue
                 # Check if the ACK number is correct.
@@ -399,7 +412,7 @@ class SimplexTCPClient:
                 if not verify_checksum(synack_segment):
                     logger.error(f"Checksum verification failed.")
                     continue
-                if not verify_flags(flags_byte=flags, expected_flags={"SYN", "ACK"}):
+                if not are_flags_set(flags_byte=flags, expected_flags={"SYN", "ACK"}):
                     logger.error(
                         f"Received segment does not have SYN and ACK flag set."
                     )
@@ -430,7 +443,7 @@ class SimplexTCPClient:
                 continue
 
         if retry_count >= MAX_RETRIES:
-            logger.error(f"Maximum number of retries reached. Aborting...")
+            logger.warning(f"Maximum number of retries reached. Aborting...")
             self.send_fin()
 
         return self.server_isn

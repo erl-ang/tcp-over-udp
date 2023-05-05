@@ -3,7 +3,7 @@ from socket import *
 from utils import (
     SimplexTCPHeader,
     verify_checksum,
-    verify_flags,
+    are_flags_set,
     validate_args,
     unpack_segment,
     MSS,
@@ -106,14 +106,20 @@ class SimplexTCPServer:
         """
         # Respond to the FIN with an ACK
         fin_ack_segment = self.create_tcp_segment(
-            payload=b"", seq_num=0, ack_num=0, flags={"ACK", "FIN"}
+            payload=b"",
+            seq_num=0,
+            ack_num=0,
+            flags={"ACK", "FIN"}
         )
         self.socket.sendto(fin_ack_segment, self.client_address)
         logger.info(f"Entering CLOSE_WAIT state: sent FINACK to client.")
 
         # Send FIN to client.
         fin_segment = self.create_tcp_segment(
-            payload=b"", seq_num=0, ack_num=0, flags={"FIN"}
+            payload=b"",
+            seq_num=0,
+            ack_num=0,
+            flags={"FIN"}
         )
         self.socket.sendto(fin_segment, self.client_address)
         logger.info(f"Entering LAST_ACK state: sent FIN to client.")
@@ -173,7 +179,7 @@ class SimplexTCPServer:
                         payload=b"", seq_num=0, ack_num=next_seq_num, flags={"ACK"}
                     )
                     next_seq_num += 1
-                elif verify_flags(flags, {"FIN"}):
+                elif are_flags_set(flags, {"FIN"}):
                     logger.info(f"Received FIN from client...")
                     self.respond_to_fin()
                 else:
@@ -273,10 +279,10 @@ class SimplexTCPServer:
 
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
-                if verify_flags(flags, {"FIN"}):
+                if are_flags_set(flags, {"FIN"}):
                     logger.info(f"Received FIN from client...")
                     self.respond_to_fin()
-                if not verify_flags(flags_byte=flags, expected_flags=expected_flags):
+                if not are_flags_set(flags_byte=flags, expected_flags=expected_flags):
                     logger.error(f"Received segment with unexpected flags.")
                     continue
                 break
@@ -332,13 +338,13 @@ class SimplexTCPServer:
                     logger.error("Checksum verification failed. Ignoring segment.")
                     continue
                 # TODO explain
-                if verify_flags(flags, {"FIN"}):
+                if are_flags_set(flags, {"FIN"}):
                     logger.info(f"Received FIN from client...")
                     self.respond_to_fin()
 
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
-                if not verify_flags(flags_byte=flags, expected_flags={"SYN"}):
+                if not are_flags_set(flags_byte=flags, expected_flags={"SYN"}):
                     logger.error(f"Received segment with SYN flag not set. Ignoring.")
                     continue
 

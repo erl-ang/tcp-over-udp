@@ -29,7 +29,7 @@ MSS = 40
 
 # Implementations of TCP usually have a maximum number of retransmissions for a segment.
 # 5-7 is a common valid.
-MAX_RETRIES = 3
+MAX_RETRIES = 7
 INITIAL_TIMEOUT = 0.5
 
 
@@ -324,7 +324,7 @@ def verify_checksum(segment):
     return calculated_checksum == segment_checksum
 
 
-def verify_flags(flags_byte, expected_flags=None):
+def are_flags_set(flags_byte, expected_flags=None):
     """
     Verify that the flags received match the expected flags by
     parsing the 8-bit flags field in the TCP header.
@@ -344,18 +344,14 @@ def verify_flags(flags_byte, expected_flags=None):
     # flag bit is set in the TCP header for each expected flag.
     if "ACK" in expected_flags:
         if not flags_byte & ACK_MASK:
-            logger.error("Expected ACK but received message with ACK flag not set.")
             return False
     if "RST" in expected_flags:
         if not flags_byte & RST_MASK:
-            logger.error("Expected RST but received message with RST flag not set.")
             return False
     if "SYN" in expected_flags:
         if not flags_byte & SYN_MASK:
-            logger.error("Expected SYN but received message with SYN flag not set.")
             return False
     if "FIN" in expected_flags:
         if not flags_byte & FIN_MASK:
-            logger.error("Expected FIN but received message with FIN flag not set.")
             return False
     return True
