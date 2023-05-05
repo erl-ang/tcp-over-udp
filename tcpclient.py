@@ -42,6 +42,7 @@ class SimplexTCPClient:
         self, file, address_of_udpl, port_number_of_udpl, windowsize, ack_port_number
     ):
         self.file = file
+        # self.proxy_address = ("0.0.0.0", 4444) For testing
         self.proxy_address = (address_of_udpl, port_number_of_udpl)
         self.windowsize = windowsize
         self.ack_port_number = ack_port_number
@@ -91,6 +92,9 @@ class SimplexTCPClient:
         """
         Go-Back-N sender.
         """
+        # open another file for testing TODO
+        test_file = open("test_file", "wb")
+        
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
         window = []
@@ -101,13 +105,16 @@ class SimplexTCPClient:
             sent_new_payload = True
 
             while True:
-
+                
+                # Don't increment the file pointer unless we are sending a new payload.
                 if sent_new_payload:
                     payload = file.read(MSS)
+
                 logger.info(f"current payload: {payload}")
 
                 if not payload:
                     logger.info(f"Reached end of file.")
+                    test_file.close()
                     return
 
                 # Fill the window with segments until it is full and send all segments.
@@ -116,15 +123,13 @@ class SimplexTCPClient:
                         f"Condition 1: {next_seq_num} < {send_base} + {self.windowsize}"
                     )
                     # Send the next segment
-                    logger.info(
-                        f"Sending payload {payload} with seq_num {next_seq_num}"
-                    )
                     segment = self.create_tcp_segment(
                         payload=payload,
                         seq_num=next_seq_num,
                         ack_num=0,  # ack num does not matter for data segments
                         flags=set(),
                     )
+                    
                     self.socket.sendto(segment, self.proxy_address)
                     sent_new_payload = True
                     window.append(segment)
@@ -136,8 +141,9 @@ class SimplexTCPClient:
                         _, ack_num, flags, _, _ = unpack_segment(ack)
                         if ack_num >= send_base:
                             logger.info(
-                                f"Received ACK {ack_num}. Moving window forward."
+                                f"Received ACK {ack_num}. Moving window forward to [{ack_num + 1}, {next_seq_num - 1}]"
                             )
+                            logger.info(f"removing segment with payload {window[0][20:]}")
                             window.pop(0)
                             send_base = ack_num + 1
                         else:
@@ -150,78 +156,9 @@ class SimplexTCPClient:
                             f"Timeout expired. Resending all segments in window [send_base, nextseqnum -1]: [{send_base}, {next_seq_num - 1}]..."
                         )
                         for segment in window:
+                            logger.info(f"resending segment with payload {segment[20:]}")
                             self.socket.sendto(segment, self.proxy_address)
-                        continue
-
-    # def send_file(self):
-    #     """
-    #     Uses Go-Back-N style pipelining to send the file to the server.
-    #     """
-    #     # Open the input file for reading and send the data until it fills the window.
-    #     # This window is used to keep track of all segments currently in flight (i.e. sent but not ACK'd)
-    #     window = []
-    #     next_expected_server_seq_num = self.server_isn + 2
-    #     next_seq_num = (
-    #         self.client_isn + 4 + 1
-    #     )  # 4 bytes for the file size, TODO change later.
-    #     # next_seq_num = cur_seq_num # The sequence number of the next segment to be sent.
-
-    #     logger.info(f"Sending file {self.file} to server...")
-    #     with open(self.file, "rb") as file:
-    #         while True:
-    #             # Fill the window with segments until it is full and send all segments.
-    #             while len(window) < self.windowsize:
-
-    #                 # Read the next MSS bytes from the file. If the payload is empty, then
-    #                 # we have reached the end of the file and can continue to the FIN procedure.
-    #                 payload = file.read(MSS)
-    #                 if not payload:
-    #                     logger.info(f"Reached end of file.")
-
-    #                     return
-
-    #                 # Create a TCP segment with the payload and send it. This segment will
-    #                 segment = self.create_tcp_segment(
-    #                     payload=payload,
-    #                     seq_num=next_seq_num,
-    #                     ack_num=next_expected_server_seq_num,
-    #                 )
-    #                 self.socket.sendto(segment, self.proxy_address)
-
-    #                 # Add the segment to the window and update the sequence number
-    #                 # of the next segment to be sent.
-    #                 window.append(segment)
-    #                 next_seq_num += len(payload)
-
-    #             # When the window contains something we listen for an ACK.
-    #             # TODO: change so
-    #             while window:
-    #                 try:
-    #                     ack, _ = self.socket.recvfrom(2048)
-    #                     seq_num, ack_num, flags, _, payload = unpack_segment(ack)
-
-    #                     # If the ACK number is greater than the lowest unACKed sequence number, then move
-    #                     # the window forward and send the next segment(s). Note that
-    #                     # If the ACK number is less than the lowest unACKed sequence number, then the ACK is for
-    #                     # a segment that has already been ACK'd. Ignore the ACK and wait for the next one.
-    #                     if ack_num >= next_expected_server_seq_num:
-    #                         logger.info(
-    #                             f"Received ACK {ack_num}. Moving window forward."
-    #                         )
-    #                         window.pop(0)
-    #                         next_expected_server_seq_num += len(payload)
-    #                         continue
-    #                 except timeout:
-    #                     # If the timer expires, then resend all segments in the window.
-    #                     logger.warning(
-    #                         f"Timeout expired. Resending all segments in window."
-    #                     )
-    #                     for segment in window:
-    #                         self.socket.sendto(segment, self.proxy_address)
-    #                     continue
-
-    #     logger.info("finished sending")
-    #     return
+                    
 
     def _send_ack_with_filesize(self):
         """
@@ -386,7 +323,7 @@ class SimplexTCPClient:
         :param flags: set of flags to be set in the TCP header
         """
         logger.info(
-            f"Sending segment with flags {flags}, ack number {ack_num}, seq number {seq_num}"
+            f"Sending segment with payload {payload}, flags {flags}, ack number {ack_num}, seq number {seq_num}"
         )
 
         # Create the segment without the checksum.

@@ -272,18 +272,19 @@ def calculate_checksum(segment: bytearray):
 
     1s complement is obtained by flipping all the bits in a number.
     """
-    # Ensure segment's length is a multiple of 2 bytes by padding a 0 byte.
+    # Ensure segment's length is a multiple of 2 bytes by padding a 0 byte onto a copy.
+    segment_copy = bytearray(segment)
     if len(segment) % 2 == 1:
         logging.info(f"Segment length is {len(segment)} bytes, padding with 0 byte.")
-        segment.extend(b"\x00")
+        segment_copy.extend(b"\x00")
 
     # Calculate the sum of all the 16-bit words in the segment. We
     # iterate over every other byte because a 16-bit word is 2 bytes.
     checksum = 0
-    for i in range(0, len(segment), 2):
+    for i in range(0, len(segment_copy), 2):
 
         # Convert the 2 bytes into a 16-bit word so we can add it to the sum.
-        word = (segment[i] << 8) + segment[i + 1]
+        word = (segment_copy[i] << 8) + segment_copy[i + 1]
         checksum += word
 
         # Wrap around if overflow occurs. To implement this, we need to zero
@@ -293,7 +294,7 @@ def calculate_checksum(segment: bytearray):
 
     # Take the 1s complement of the sum and truncate to 16 bits.
     checksum = ~checksum & 0xFFFF
-
+    
     return checksum.to_bytes(2, byteorder="big")
 
 
