@@ -95,7 +95,7 @@ class SimplexTCPServer:
 
         pass
 
-    def _respond_to_fin(self):
+    def respond_to_fin(self):
         """
         Called when the server receives a FIN from the client.
 
@@ -104,8 +104,26 @@ class SimplexTCPServer:
         - Send its own FIN --> enters LAST_ACK state
         - Receive an ACK and do nothing --> enters CLOSED state
         """
-
-        pass
+        # Respond to the FIN with an ACK
+        fin_ack_segment = self.create_tcp_segment(
+            payload=b"",seq_num=0, ack_num=0, flags={"ACK","FIN"}
+        )
+        self.socket.sendto(fin_ack_segment, self.client_address)
+        logger.info(f"Entering CLOSE_WAIT state: sent FINACK to client.")
+        
+        # Send FIN to client.
+        fin_segment = self.create_tcp_segment(
+            payload=b"",seq_num=0, ack_num=0, flags={"FIN"}
+        )
+        self.socket.sendto(fin_segment, self.client_address)
+        logger.info(f"Entering LAST_ACK state: sent FIN to client.")
+        
+        # At this point the client sends an ACK, but the server can
+        # just ignore this. The diagram on pg 251 of K&R depicts the
+        # server closing the connection directly after sending the FIN.
+        logger.info(f"Entering CLOSED state. Goodbye...")
+        self.socket.close()
+        sys.exit(0)
 
     def receive_file_gbn(self):
         """
@@ -154,6 +172,9 @@ class SimplexTCPServer:
                         payload=b"", seq_num=0, ack_num=next_seq_num, flags={"ACK"}
                     )
                     next_seq_num += 1
+                elif verify_flags(flags, {"FIN"}):
+                    logger.info(f"Received FIN from client...")
+                    self.respond_to_fin()
                 else:
                     logger.warning(
                         f"Received corrupted or out of order segment with seq num {seq_num} and payload {payload} \n Sending dup ACK for seq num {next_seq_num - 1}"
@@ -248,15 +269,15 @@ class SimplexTCPServer:
                 if not verify_checksum(segment=segment):
                     logger.error("Checksum verification failed. Ignoring segment.")
                     continue
-                logger.debug(f"Checksum verification passed for segment!")
 
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
+                if verify_flags(flags, {"FIN"}):
+                    logger.info(f"Received FIN from client...")
+                    self.respond_to_fin()
                 if not verify_flags(flags_byte=flags, expected_flags=expected_flags):
                     logger.error(f"Received segment with unexpected flags.")
                     continue
-                logger.debug(f"Flag verification passed for segment!")
-
                 break
             except timeout:
                 logger.info(f"Timeout occurred while waiting for ACK. Retrying...")
@@ -268,6 +289,7 @@ class SimplexTCPServer:
 
         if retry_count > MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
+            # send_fin
             sys.exit(1)
 
         return payload
@@ -308,14 +330,16 @@ class SimplexTCPServer:
                 if not verify_checksum(segment=syn_segment):
                     logger.error("Checksum verification failed. Ignoring segment.")
                     continue
-                logger.debug(f"Checksum verification passed for segment!")
-
+                # TODO explain
+                if verify_flags(flags, {"FIN"}):
+                    logger.info(f"Received FIN from client...")
+                    self.respond_to_fin()
+                
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
                 if not verify_flags(flags_byte=flags, expected_flags={"SYN"}):
                     logger.error(f"Received segment with SYN flag not set. Ignoring.")
                     continue
-                logger.debug(f"Flag verification passed for segment!")
 
                 self.client_isn = seq_num
                 logger.info(f"SYN segment received with client ISN: {self.client_isn}")

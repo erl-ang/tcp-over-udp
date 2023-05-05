@@ -202,12 +202,16 @@ class SimplexTCPClient:
         """
         Go-Back-N sender.
         """
-
         # Send base denotes the sequence number of the oldest unacknowledged segment.
-        # This is initialized to the client's
+        # This is initialized to TODO
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
         window = []
+        
+        # TODO: change window to list of tuples (segment, num_retries)
+        # Format: {segment: num_retries}. This is the window of segments that have been sent but not yet acknowledged.
+        # When a segment hits max_retries, send_fin() to terminate the connection as
+        # the network is really ass then.
 
         logger.info(f"Sending file {self.file} to server...")
         with open(self.file, "rb") as file:
@@ -339,8 +343,8 @@ class SimplexTCPClient:
                 continue
 
         if retry_count > MAX_RETRIES:
-            logger.error(f"Maximum number of retries reached. Aborting...")
-            sys.exit(1)
+            logger.error(f"Maximum number of retries reached...")
+            self.send_fin()
 
         return
 
@@ -414,7 +418,7 @@ class SimplexTCPClient:
 
         if retry_count > MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
-            sys.exit(1)
+            self.send_fin()
 
         return self.server_isn
 
