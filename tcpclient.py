@@ -36,8 +36,9 @@ logger.addHandler(fh)
 
 # The client waits TIME_WAIT seconds before closing the connection after receiving
 # a FIN from the server.
-# Typical values are 30 seconds, 1 minute, and 2 minutes.
-TIME_WAIT = 30
+# Typical values are 30 seconds, 1 minute, and 2 minutes. I keep
+# at 15 seconds so I don't have to wait too long.
+TIME_WAIT = 20
 
 
 class SimplexTCPClient:
@@ -133,8 +134,8 @@ class SimplexTCPClient:
         # if the socket times out.
         retry_count = 0
         for _ in range(MAX_RETRIES):
-            retry_count +=1
-            
+            retry_count += 1
+
             self.socket.sendto(fin_segment, self.proxy_address)
             logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server.")
 
@@ -161,9 +162,11 @@ class SimplexTCPClient:
                 logger.warning(f"Exception occurred while terminating connection {e}")
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 continue
-        
+
         if retry_count >= MAX_RETRIES:
-            logger.error(f"Maximum number of retries reached while sending FIN. Aborting...")
+            logger.error(
+                f"Maximum number of retries reached while sending FIN. Aborting..."
+            )
             exit(1)
         return
 
@@ -177,7 +180,7 @@ class SimplexTCPClient:
         # a loop with a maximum number of retries like in _send_fin_and_wait_for_ack().
         while True:
             try:
-                fin_segment = self.socket.recvfrom(2048)
+                fin_segment, _ = self.socket.recvfrom(2048)
 
                 # Verify this is a FIN segment.
                 _, _, flags, _, _ = unpack_segment(fin_segment)

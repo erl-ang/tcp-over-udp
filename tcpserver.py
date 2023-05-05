@@ -121,6 +121,7 @@ class SimplexTCPServer:
         # At this point the client sends an ACK, but the server can
         # just ignore this. The diagram on pg 251 of K&R depicts the
         # server closing the connection directly after sending the FIN.
+        ack, _ = self.socket.recvfrom(2048)
         logger.info(f"Entering CLOSED state. Goodbye...")
         self.socket.close()
         sys.exit(0)
