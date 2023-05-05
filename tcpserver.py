@@ -9,12 +9,13 @@ from utils import (
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
+    TIME_WAIT,
 )
 import logging
-import struct
 import traceback
 import random
 import sys
+import time
 
 logger = logging.getLogger("TCPServer")
 logger.setLevel(logging.INFO)
@@ -91,9 +92,117 @@ class SimplexTCPServer:
         Called when the server is done receiving the file. If instead we send a FIN when the client is done
         sending the file, there is a possibility that the server has not finished receiving the entire
         file.
-        """
 
-        pass
+        This method is symmetric to the client's send_fin method, except that the server does not
+        need to worry about its FIN requests being lost.
+
+        After the server is done receiving the file, the client will:
+        - Send a FIN to the server --> enters FIN_WAIT_1 state
+        - Receive an ACK from the server --> enters FIN_WAIT_2 state
+        - Receive a FIN from the server --> enters TIME_WAIT state
+        - Send an ACK to the server --> enters CLOSED state
+        """
+        # Send a FIN segment to the client
+        self._send_fin_and_wait_for_finack()
+
+        self._wait_for_fin_and_send_finack()
+
+        # Wait for TIME_WAIT seconds before closing the connection.
+        time.sleep(TIME_WAIT)
+        self.socket.close()
+        sys.exit(0)
+
+    def _send_fin_and_wait_for_finack(self):
+        """
+        Helper function for send_fin. Sends a FIN to the client and waits for a FINACK.
+        """
+        fin_segment = self.create_tcp_segment(
+            payload=b"",
+            seq_num=0,
+            ack_num=0,
+            flags={"FIN"},
+        )
+        self.socket.sendto(fin_segment, self.client_address)
+        logger.info("Entered FIN_WAIT_1 state: sent FIN to client.")
+
+        # Wait for the client to send an ACK. There is a chance that the client's ACK
+        # (and all its retransmissions) will be lost and the server will never receive
+        # it. In this case, the server will wait for timeout * MAX_RETRIES seconds and
+        # then close the connection to avoid a half-open connection. On the client side, after
+        # reaching all its retransmissions, the client will abort the procedure and
+        # close the connection.
+        retry_count = 0
+        for _ in MAX_RETRIES:
+            retry_count += 1
+            try:
+                fin_ack, _ = self.socket.recvfrom(2048)
+                _, _, flags, _, _ = unpack_segment(fin_ack)
+
+                if not verify_checksum(fin_ack) or not are_flags_set(
+                    flags, {"ACK", "FIN"}
+                ):
+                    logger.error(f"Verification failed. Dropping packet...")
+                    continue
+
+                # Successfully received FINACK
+                logger.info("Entered FIN_WAIT_2 state: received FINACK from client.")
+                break
+            except timeout:
+                logger.info(
+                    "Timeout occurred while waiting for FINACK. Waiting a bit longer..."
+                )
+
+        if retry_count >= MAX_RETRIES:
+            logger.info(
+                f"Waited too long for FINACK. Aborting to avoid half-open connections..."
+            )
+            sys.exit(0)
+
+        return
+
+    def _wait_for_fin_and_send_finack(self):
+        """
+        Helper function for send_fin. Waits for a FIN from the client and sends a FINACK.
+        """
+        # There is a chance that the client's FIN request (and all its retransmissions)
+        # will be lost and the server will never receive it. In this case, the server
+        # will wait for a timeout and then close the connection to avoid a half-open
+        # connection. On the client side, after reaching all its retransmissions, the
+        # client will abort the procedure and close the connection.
+        retry_count = 0
+        for _ in MAX_RETRIES:
+            retry_count += 1
+            try:
+                fin, _ = self.socket.recvfrom(2048)
+                _, _, flags, _, _ = unpack_segment(fin)
+
+                if not verify_checksum(fin) or not are_flags_set(flags, {"FIN"}):
+                    logger.error(f"Verification failed. Dropping packet...")
+                    continue
+
+                # Successfully received FIN, Send FINACK and return to closed state.
+                logger.info("Entered TIME_WAIT state: received FIN from client.")
+                ack_segment = self.create_tcp_segment(
+                    payload=b"",
+                    seq_num=0,
+                    ack_num=0,
+                    flags={"ACK", "FIN"},
+                )
+                self.socket.sendto(ack_segment, self.proxy_address)
+                break
+
+            except timeout:
+                logger.info(
+                    "Timeout occurred while waiting for FIN. Waiting a bit longer..."
+                )
+
+        if retry_count >= MAX_RETRIES:
+            logger.info(
+                f"Waited too long for FIN. Aborting to avoid half-open connections..."
+            )
+            sys.exit(0)
+
+        return
 
     def respond_to_fin(self):
         """

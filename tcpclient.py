@@ -103,7 +103,8 @@ class SimplexTCPClient:
         - Send a FIN segment to the server.
         - Wait for an ACK from the server.
         - Wait for the server to send its own FIN segment and send an ACK.
-        - Wait for TIME_WAIT seconds before closing the connection.
+        - Wait for TIME_WAIT seconds
+        - Send an ACK to the server before closing the connection.
         """
         # Send a FIN segment to the server
         self._send_fin_and_wait_for_ack()
@@ -167,7 +168,7 @@ class SimplexTCPClient:
             logger.error(
                 f"Maximum number of retries reached while sending FIN. Aborting..."
             )
-            exit(1)
+            exit(0)
         return
 
     def _wait_for_fin_and_send_ack(self):
@@ -200,7 +201,7 @@ class SimplexTCPClient:
                     payload=b"",
                     seq_num=0,
                     ack_num=0,
-                    flags={"ACK"},
+                    flags={"ACK", "FIN"},
                 )
                 self.socket.sendto(ack_segment, self.proxy_address)
                 break
