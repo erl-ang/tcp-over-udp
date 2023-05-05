@@ -106,16 +106,10 @@ class SimplexTCPClient:
         - Wait for TIME_WAIT seconds before closing the connection.
         """
         # Send a FIN segment to the server
-        fin_segment = self.create_
-        logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server...")
-
-        # Wait for ACk and send nothing
-        logger.info(f"Entered FIN_WAIT_2 state: received ACK from server...")
+        self._send_fin_and_wait_for_ack()
 
         # Wait for the server to send its own FIN segment and send an ACK.
-        logger.info(
-            f"Entered TIME_WAIT state: received FIN from server and sending ACK back..."
-        )
+        self._wait_for_fin_and_send_ack()
 
         # Wait for TIME_WAIT seconds before closing the connection.
         time.sleep(TIME_WAIT)
@@ -123,7 +117,86 @@ class SimplexTCPClient:
         # Deallocate resources.
         logger.info(f"Closing connection. Goodbye...")
         self.socket.close()
-        pass
+        sys.exit(1)
+
+    def _send_fin_and_wait_for_ack(self):
+        """
+        Helper function for send_fin
+        """
+        fin_segment = self.create_tcp_segment(
+            payload=b"",
+            seq_num=0,
+            ack_num=0,
+            flags={"FIN"},
+        )
+
+        # Transmit FIN segments until we receive an FINACK from the server, retransmitting
+        # if the socket times out.
+        while True:
+            self.socket.sendto(fin_segment, self.proxy_address)
+            logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server.")
+
+            try:
+                fin_ack, _ = self.socket.recvfrom(
+                    2048
+                )  # do i change this to windowsize?
+                _, _, flags, _, _ = unpack_segment(fin_ack)
+
+                if not verify_checksum(fin_ack) or not verify_flags(
+                    flags, {"ACK", "FIN"}
+                ):
+                    logger.error(f"Verification failed. Dropping packet...")
+                    continue
+
+                logger.info(f"Entered FIN_WAIT_2 state: received ACK from server.")
+                break
+            except timeout:
+                logger.info(
+                    f"Timeout occurred while waiting for FINACK. Retransmitting FIN segment..."
+                )
+                continue
+            except Exception as e:
+                logger.warning(f"Exception occurred while terminating connection {e}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                continue
+        return
+
+    def _wait_for_fin_and_send_ack(self):
+        """
+        Helper function for the second leg of send_fin()
+        """
+        while True:
+            try:
+                fin_segment = self.socket.recvfrom(2048)
+
+                # Verify this is a FIN segment.
+                _, _, flags, _, _ = unpack_segment(fin_segment)
+                if not verify_checksum(fin_segment) and not verify_flags(
+                    flags, {"FIN"}
+                ):
+                    logger.error(f"Verification failed. Dropping packet...")
+                    continue
+
+                # Correctly received FIN segment from server. Send ACK back. Note that we don't
+                # need to retransmit this ACK because the server will close its side of the
+                # connection upon sending its FIN segment.
+                logger.info(
+                    f"Entered TIME_WAIT state: received FIN from server and sending ACK back..."
+                )
+                ack_segment = self.create_tcp_segment(
+                    payload=b"",
+                    seq_num=0,
+                    ack_num=0,
+                    flags={"ACK"},
+                )
+                self.socket.sendto(ack_segment, self.proxy_address)
+                break
+            except timeout:
+                logger.error(
+                    f"Timeout occurred while waiting for FIN. Waiting longer..."
+                )
+                continue
+        return
 
     def send_file_gbn(self):
         """
