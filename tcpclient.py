@@ -282,19 +282,20 @@ class SimplexTCPClient:
                         logger.warning(
                             f"Timeout expired. Resending all segments in window [send_base, nextseqnum -1]: [{send_base}, {next_seq_num - 1}]..."
                         )
-                        
+
                         # If the segment hit the retransmission limit for a packet, then terminate
                         # the connection.
                         for i in range(len(window)):
                             segment, num_retries = window[i]
-                            num_retries+=1
-                            print(f"num_retries: {num_retries}")
-                            
-                            if num_retries >= MAX_RETRIES: 
-                                logger.warning(f"Max retransmissions reached. Terminating connection...")
+                            num_retries += 1
+
+                            if num_retries >= MAX_RETRIES:
+                                logger.warning(
+                                    f"Max retransmissions reached. Terminating connection..."
+                                )
                                 self.send_fin()
                             window[i] = (segment, num_retries)
-                        
+
                         # Otherwise, resend all the segments and increment their retry counts
                         for segment, num_retries in window:
                             logger.info(
@@ -507,11 +508,11 @@ def main():
     parser.add_argument("ack_port_number", type=int, help="port number for ACKs")
     args = parser.parse_args()
 
-    print("=============================")
-    print("TCPClient Parameters:")
+    logger.info("=============================")
+    logger.info("TCPClient Parameters:")
     for arg in vars(args):
-        print(f"{arg}: {getattr(args, arg)}")
-    print("==============================")
+        logger.info(f"{arg}: {getattr(args, arg)}")
+    logger.info("==============================")
 
     # Validate command line arguments before allocating TCP state variables.
     if not validate_args(args, is_client=True):

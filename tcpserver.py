@@ -106,20 +106,14 @@ class SimplexTCPServer:
         """
         # Respond to the FIN with an ACK
         fin_ack_segment = self.create_tcp_segment(
-            payload=b"",
-            seq_num=0,
-            ack_num=0,
-            flags={"ACK", "FIN"}
+            payload=b"", seq_num=0, ack_num=0, flags={"ACK", "FIN"}
         )
         self.socket.sendto(fin_ack_segment, self.client_address)
         logger.info(f"Entering CLOSE_WAIT state: sent FINACK to client.")
 
         # Send FIN to client.
         fin_segment = self.create_tcp_segment(
-            payload=b"",
-            seq_num=0,
-            ack_num=0,
-            flags={"FIN"}
+            payload=b"", seq_num=0, ack_num=0, flags={"FIN"}
         )
         self.socket.sendto(fin_segment, self.client_address)
         logger.info(f"Entering LAST_ACK state: sent FIN to client.")
@@ -387,11 +381,11 @@ def main():
     parser.add_argument("address_for_acks", type=str, help="address to send ACKs to")
     parser.add_argument("port_for_acks", type=int, help="port to send ACKs to")
     args = parser.parse_args()
-    print("===============")
-    print("TCPServer Parameters:")
+    logger.info("===============")
+    logger.info("TCPServer Parameters:")
     for arg in vars(args):
-        print(f"{arg}: {getattr(args, arg)}")
-    print("===============")
+        logger.info(f"{arg}: {getattr(args, arg)}")
+    logger.info("===============")
 
     if not validate_args(args, is_client=False):
         logger.error("Invalid arguments. Aborting...")
