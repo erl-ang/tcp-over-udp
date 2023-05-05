@@ -29,7 +29,7 @@ MSS = 40
 
 # Implementations of TCP usually have a maximum number of retransmissions for a segment.
 # 5-7 is a common valid.
-MAX_RETRIES = 6
+MAX_RETRIES = 2
 INITIAL_TIMEOUT = 0.5
 
 

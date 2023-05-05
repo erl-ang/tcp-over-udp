@@ -12,7 +12,6 @@ from utils import (
 )
 import random
 import logging
-import struct
 import sys
 import os
 import traceback
@@ -117,7 +116,7 @@ class SimplexTCPClient:
         # Deallocate resources.
         logger.info(f"Closing connection. Goodbye...")
         self.socket.close()
-        sys.exit(1)
+        sys.exit(0)
 
     def _send_fin_and_wait_for_ack(self):
         """
@@ -132,7 +131,10 @@ class SimplexTCPClient:
 
         # Transmit FIN segments until we receive an FINACK from the server, retransmitting
         # if the socket times out.
-        while True:
+        retry_count = 0
+        for _ in range(MAX_RETRIES):
+            retry_count +=1
+            
             self.socket.sendto(fin_segment, self.proxy_address)
             logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server.")
 
@@ -159,12 +161,20 @@ class SimplexTCPClient:
                 logger.warning(f"Exception occurred while terminating connection {e}")
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 continue
+        
+        if retry_count >= MAX_RETRIES:
+            logger.error(f"Maximum number of retries reached while sending FIN. Aborting...")
+            exit(1)
         return
 
     def _wait_for_fin_and_send_ack(self):
         """
         Helper function for the second leg of send_fin()
         """
+        # Note: we are guaranteed to receive a FIN from
+        # the server per the assignment spec. Otherwise, we can
+        # avoid infinitely waiting by changing the infinite loop to
+        # a loop with a maximum number of retries like in _send_fin_and_wait_for_ack().
         while True:
             try:
                 fin_segment = self.socket.recvfrom(2048)
@@ -207,7 +217,7 @@ class SimplexTCPClient:
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
         window = []
-        
+
         # TODO: change window to list of tuples (segment, num_retries)
         # Format: {segment: num_retries}. This is the window of segments that have been sent but not yet acknowledged.
         # When a segment hits max_retries, send_fin() to terminate the connection as
@@ -303,7 +313,7 @@ class SimplexTCPClient:
         # retransmission and reaching the maximum number of retries.
         retry_count = 0
 
-        for _ in range(MAX_RETRIES + 1):
+        for _ in range(MAX_RETRIES):
             retry_count += 1
             self.socket.sendto(segment, self.proxy_address)
             logger.info(
@@ -342,7 +352,7 @@ class SimplexTCPClient:
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 continue
 
-        if retry_count > MAX_RETRIES:
+        if retry_count >= MAX_RETRIES:
             logger.error(f"Maximum number of retries reached...")
             self.send_fin()
 
@@ -368,7 +378,7 @@ class SimplexTCPClient:
         # retransmission and reaching the maximum number of retries.
         retry_count = 0
 
-        for _ in range(MAX_RETRIES + 1):
+        for _ in range(MAX_RETRIES):
             retry_count += 1
             self.socket.sendto(syn_segment, self.proxy_address)
             logger.info(f"Entered SYN_SENT state: sent SYN segment to server")
@@ -416,7 +426,7 @@ class SimplexTCPClient:
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 continue
 
-        if retry_count > MAX_RETRIES:
+        if retry_count >= MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
             self.send_fin()
 

@@ -106,18 +106,18 @@ class SimplexTCPServer:
         """
         # Respond to the FIN with an ACK
         fin_ack_segment = self.create_tcp_segment(
-            payload=b"",seq_num=0, ack_num=0, flags={"ACK","FIN"}
+            payload=b"", seq_num=0, ack_num=0, flags={"ACK", "FIN"}
         )
         self.socket.sendto(fin_ack_segment, self.client_address)
         logger.info(f"Entering CLOSE_WAIT state: sent FINACK to client.")
-        
+
         # Send FIN to client.
         fin_segment = self.create_tcp_segment(
-            payload=b"",seq_num=0, ack_num=0, flags={"FIN"}
+            payload=b"", seq_num=0, ack_num=0, flags={"FIN"}
         )
         self.socket.sendto(fin_segment, self.client_address)
         logger.info(f"Entering LAST_ACK state: sent FIN to client.")
-        
+
         # At this point the client sends an ACK, but the server can
         # just ignore this. The diagram on pg 251 of K&R depicts the
         # server closing the connection directly after sending the FIN.
@@ -252,7 +252,7 @@ class SimplexTCPServer:
         # retransmission and reaching the maximum number of retries.
         retry_count = 0
 
-        for _ in range(MAX_RETRIES + 1):
+        for _ in range(MAX_RETRIES):
             retry_count += 1
             self.socket.sendto(synack_segment, self.client_address)
 
@@ -287,7 +287,7 @@ class SimplexTCPServer:
                 logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
-        if retry_count > MAX_RETRIES:
+        if retry_count >= MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
             # send_fin
             sys.exit(1)
@@ -313,7 +313,7 @@ class SimplexTCPServer:
         # retransmission and reaching the maximum number of retries.
         retry_count = 0
 
-        for _ in range(MAX_RETRIES + 1):
+        for _ in range(MAX_RETRIES):
             retry_count += 1
 
             try:
@@ -334,7 +334,7 @@ class SimplexTCPServer:
                 if verify_flags(flags, {"FIN"}):
                     logger.info(f"Received FIN from client...")
                     self.respond_to_fin()
-                
+
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
                 if not verify_flags(flags_byte=flags, expected_flags={"SYN"}):
@@ -355,9 +355,10 @@ class SimplexTCPServer:
                 logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
-        if retry_count > MAX_RETRIES:
+        if retry_count >= MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
             sys.exit(1)
+            # self.send_fin()
 
         return self.client_isn
 
