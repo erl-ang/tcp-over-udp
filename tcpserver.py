@@ -133,10 +133,9 @@ class SimplexTCPServer:
                 ack = None
                 if verify_checksum(segment) and seq_num == next_seq_num:
                     last_byte_recvd += len(payload)
-                    logger.info(f"TESTING payload received: {segment[20:]}")
 
                     # Write the payload to the file
-                    file.write(segment[20:])
+                    file.write(payload)
                     ack = self.create_tcp_segment(
                         payload=b"", seq_num=0, ack_num=next_seq_num, flags={"ACK"}
                     )
