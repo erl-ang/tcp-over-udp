@@ -28,7 +28,7 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 # Do the same to log to a file.
-fh = logging.FileHandler("tcpserver.log")
+fh = logging.FileHandler("tcpserver.log", mode="w")
 fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
