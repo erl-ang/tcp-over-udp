@@ -6,6 +6,9 @@ from utils import (
     verify_flags,
     validate_args,
     unpack_segment,
+    MSS,
+    MAX_RETRIES,
+    INITIAL_TIMEOUT,
 )
 import logging
 import struct
@@ -24,11 +27,11 @@ formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(messag
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-# Implementations of TCP usually have a maximum number of retransmissions for a segment.
-# 5-7 is a common valid.
-MAX_RETRIES = 6
-
-MSS = 40
+# Do the same to log to a file.
+fh = logging.FileHandler("tcpserver1.log")
+fh.setLevel(logging.INFO)
+fh.setFormatter(formatter)
+logger.addHandler(fh)
 
 
 class SimplexTCPServer:
@@ -40,7 +43,7 @@ class SimplexTCPServer:
         self.client_address = (address_for_acks, port_for_acks)
 
         self.socket = self.create_and_bind_socket()
-        self.socket.settimeout(0.5)
+        self.socket.settimeout(INITIAL_TIMEOUT)
         logger.info(f"Socket created and bound to port {self.listening_port}")
 
         self.client_isn = -1
@@ -67,7 +70,7 @@ class SimplexTCPServer:
         # Create the segment without the checksum. Increment the ack number,
         # indicating that the server is expecting the ack_num + 1 byte next
         logger.info(
-            f"Sending segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and flags {flags}"
+            f"Sending segment with ack number {ack_num}, seq number {seq_num}, and flags {flags}"
         )
 
         tcp_segment = SimplexTCPHeader(
@@ -85,56 +88,133 @@ class SimplexTCPServer:
         # TODO: change naming. This is actually the segment, not just the header.
         return tcp_header
 
-    def receive_file(self):
+    def receive_file_gbn(self):
         """
-        Receives the requested file from the client with TCP flow control.
-        """
+        Go-Back-N receiver. The receiver will keep track of the
+        expected sequence number to receive next: nextseqnum
 
-        # Open the output file for writing. Keep writing data to the file until
+        Out of order and corrupted packets will be discarded. In the
+        case of 1) receiving a new packet and 2) receiving a corrupted/OOO
+        packet, the receiver will send an ACK with the last in-order packet
+        correctly received, resulting in duplicate ACKs (acks for packets
+        the server has already ACkd for case 2.
+        """
+        # File name will be "received_file" + file extension
+        # file_extension = self.file.split(".")[-1]
+        # file_name = "recvd_file." + file_extension
+        file_name = "recvd_file"
+
+        # Initialize GBN variables
+        next_seq_num = self.client_isn + 4 + 1
+        # next_expected_seq_num = self.client_isn + 2
+        last_byte_recvd = 0
+
+        # Open the new file for writing. Keep writing data to the file until
         # the server has received all the data from the client.
-        file = None
-        try:
-            file = open(f"{self.file}_copy", "wb")
-        except IOError:
-            logger.error(f"Could not open file {self.file}")  # TODO change to filenmae
-            # self.shutdown()
-            sys.exit(1)
+        logger.info(f"Receiving file {self.file}...")
+        with open(file_name, "wb") as file:
+            while last_byte_recvd < self.file_size:
+                try:
+                    segment, client_address = self.socket.recvfrom(
+                        2048
+                    )  # catch timeout
+                except timeout:
+                    logger.warning(f"Timeout occured receiving data. Retrying...")
+                    continue
 
-        last_byte_read = 0
-        last_byte_received = 0
+                # Received a segment!
+                seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
+                logger.info(f"payload received: {payload}")
 
-        # Listen for segments from the client and keep track of the next in-order
-        # seqeunce number. After receiving a segment, validate that this segment
-        # has this sequence number. If it does, write the payload to the file and
-        # send an ACK. If it does not, discard the segment and send an ACK. In both cases,
-        # the ACK will contain the next expected sequence number.
-        seq_num = self.server_isn + 1
-        payload = None
-        while last_byte_read < self.file_size:
-            try:
-                segment, client_address = self.socket.recvfrom(2048)  # catch timeout
-            except timeout:
-                logger.warning(f"Timeout occured receiving data. Retrying...")
-                continue
+                # If the packet is in order and uncorrupted, write the payload to the file
+                # increment nextseqnum, send ACK saying nextseqnum was received. If the packet
+                # is out of order or corrupted, send ACK saying last in-order packet was received.
+                if verify_checksum(segment) and seq_num == next_seq_num:
+                    last_byte_recvd += len(payload)
 
-            seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
-            # Discard the segment if out of order.
+                    # Write the payload to the file
+                    payload_without_zeros = payload.replace(b"\x00", b"")
+                    file.write(payload_without_zeros)
+                    ack = self.create_tcp_segment(
+                        payload=b"", seq_num=0, ack_num=next_seq_num, flags={"ACK"}
+                    )
+                    next_seq_num += len(payload)
+                else:
+                    logger.warning(
+                        f"Received corrupted or out of order segment with seq num {seq_num}. Sending dup ACK for seq num {next_seq_num - 1}"
+                    )
 
-            last_byte_read += len(payload)
-            file.write(payload)
-            seq_num += 1
+                    ack = self.create_tcp_segment(
+                        payload=b"",
+                        seq_num=0,  # seq_num doesn't matter for ACKs
+                        ack_num=(next_seq_num - 1),
+                        flags={"ACK"},
+                    )
 
-            ack = self.create_tcp_segment(
-                payload=b"",
-                seq_num=seq_num,
-                ack_num=(self.client_isn + 4 + 1 + last_byte_read),
-                flags={"ACK"},
-            )
-            self.socket.sendto(ack, self.client_address)
-        logger.info(f"last payload: {payload.decode()}")
+                self.socket.sendto(ack, self.client_address)
+
+        logger.info(f"last payload: {payload}")
         logger.info(f"File received. Closing connection...")
-        file.close()
         return
+
+    # def receive_file(self):
+    # """
+    # Receives the requested file from the client with TCP flow control.
+    # """
+
+    # # Open the output file for writing. Keep writing data to the file until
+    # # the server has received all the data from the client.
+    # file = None
+
+    # # File name will be "received_file" + file extension
+    # # file_extension = self.file.split(".")[-1]
+    # # file_name = "recvd_file." + file_extension
+    # file_name = "recvd_file"
+    # try:
+    #     file = open(file_name, "wb")
+    # except IOError:
+    #     logger.error(f"Could not open file {self.file}")  # TODO change to filenmae
+    #     # self.shutdown()
+    #     sys.exit(1)
+
+    # last_byte_read = 0
+    # last_byte_received = 0
+
+    # # Listen for segments from the client and keep track of the next in-order
+    # # seqeunce number. After receiving a segment, validate that this segment
+    # # has this sequence number. If it does, write the payload to the file and
+    # # send an ACK. If it does not, discard the segment and send an ACK. In both cases,
+    # # the ACK will contain the next expected sequence number.
+    # seq_num = self.server_isn + 1
+    # payload = None
+    # while last_byte_read < self.file_size:
+    #     try:
+    #         segment, client_address = self.socket.recvfrom(2048)  # catch timeout
+    #     except timeout:
+    #         logger.warning(f"Timeout occured receiving data. Retrying...")
+    #         continue
+
+    #     seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
+    #     # Discard the segment if out of order.
+
+    #     last_byte_read += len(payload)
+
+    #     payload_without_zeros = payload.replace(b'\x00', b'')
+    #     file.write(payload_without_zeros)
+    #     # file.write(payload)
+    #     seq_num += 1
+
+    #     ack = self.create_tcp_segment(
+    #         payload=b"",
+    #         seq_num=seq_num,
+    #         ack_num=(self.client_isn + 4 + 1 + last_byte_read),
+    #         flags={"ACK"},
+    #     )
+    #     self.socket.sendto(ack, self.client_address)
+    # logger.info(f"last payload: {payload}")
+    # logger.info(f"File received. Closing connection...")
+    # file.close()
+    # return
 
     def establish_connection(self):
         """
@@ -167,7 +247,9 @@ class SimplexTCPServer:
         )
         self.socket.sendto(ack_segment, self.client_address)
 
-        logger.info(f"Established connection with client! file_size: {self.file_size}")
+        logger.info(
+            f"================= Established connection with client! file_size: {self.file_size} ======================"
+        )
         return
 
     def _send_and_wait_for_ack(self, payload, flags=set(), expected_flags=set()):
@@ -196,7 +278,6 @@ class SimplexTCPServer:
         for _ in range(MAX_RETRIES + 1):
             retry_count += 1
             self.socket.sendto(synack_segment, self.client_address)
-            logger.info(f"Segment sent!")
 
             try:
                 segment, client_address = self.socket.recvfrom(2048)
@@ -276,9 +357,7 @@ class SimplexTCPServer:
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
                 if not verify_flags(flags_byte=flags, expected_flags={"SYN"}):
-                    logger.error(
-                        f"Received segment with SYN flag not set. Ignoring. Message: {syn_segment.decode()}"
-                    )
+                    logger.error(f"Received segment with SYN flag not set. Ignoring.")
                     continue
                 logger.debug(f"Flag verification passed for segment!")
 
@@ -307,7 +386,7 @@ class SimplexTCPServer:
 
     def run(self):
         self.establish_connection()
-        self.receive_file()
+        self.receive_file_gbn()
         return
 
 

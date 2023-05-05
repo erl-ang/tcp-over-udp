@@ -23,8 +23,14 @@ RST_MASK = 0b00001000
 SYN_MASK = 0b00000100
 FIN_MASK = 0b00000010
 
-# TODO: make it so you only change one of these MSS's across files
+# Maximum segment size (MSS) is the maximum amount of data that can be carried in a single
+# TCP segment. The MSS is specified during the initial connection setup.
 MSS = 40
+
+# Implementations of TCP usually have a maximum number of retransmissions for a segment.
+# 5-7 is a common valid.
+MAX_RETRIES = 6
+INITIAL_TIMEOUT = 0.5
 
 
 class SimplexTCPHeader:
