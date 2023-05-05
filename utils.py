@@ -294,7 +294,7 @@ def calculate_checksum(segment: bytearray):
 
     # Take the 1s complement of the sum and truncate to 16 bits.
     checksum = ~checksum & 0xFFFF
-    
+
     return checksum.to_bytes(2, byteorder="big")
 
 

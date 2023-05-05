@@ -29,7 +29,7 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 # Do the same to log to a file.
-fh = logging.FileHandler("tcpclient.log")
+fh = logging.FileHandler("tcpclient.log", mode="w")
 fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
@@ -94,7 +94,7 @@ class SimplexTCPClient:
         """
         # open another file for testing TODO
         test_file = open("test_file", "wb")
-        
+
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
         window = []
@@ -105,7 +105,7 @@ class SimplexTCPClient:
             sent_new_payload = True
 
             while True:
-                
+
                 # Don't increment the file pointer unless we are sending a new payload.
                 if sent_new_payload:
                     payload = file.read(MSS)
@@ -129,7 +129,7 @@ class SimplexTCPClient:
                         ack_num=0,  # ack num does not matter for data segments
                         flags=set(),
                     )
-                    
+
                     self.socket.sendto(segment, self.proxy_address)
                     sent_new_payload = True
                     window.append(segment)
@@ -143,7 +143,9 @@ class SimplexTCPClient:
                             logger.info(
                                 f"Received ACK {ack_num}. Moving window forward to [{ack_num + 1}, {next_seq_num - 1}]"
                             )
-                            logger.info(f"removing segment with payload {window[0][20:]}")
+                            logger.info(
+                                f"removing segment with payload {window[0][20:]}"
+                            )
                             window.pop(0)
                             send_base = ack_num + 1
                         else:
@@ -156,9 +158,10 @@ class SimplexTCPClient:
                             f"Timeout expired. Resending all segments in window [send_base, nextseqnum -1]: [{send_base}, {next_seq_num - 1}]..."
                         )
                         for segment in window:
-                            logger.info(f"resending segment with payload {segment[20:]}")
+                            logger.info(
+                                f"resending segment with payload {segment[20:]}"
+                            )
                             self.socket.sendto(segment, self.proxy_address)
-                    
 
     def _send_ack_with_filesize(self):
         """
