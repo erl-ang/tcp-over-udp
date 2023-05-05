@@ -16,6 +16,7 @@ import struct
 import sys
 import os
 import traceback
+import time
 
 logger = logging.getLogger("TCPClient")
 logger.setLevel(logging.INFO)
@@ -33,6 +34,11 @@ fh = logging.FileHandler("tcpclient.log", mode="w")
 fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
+
+# The client waits TIME_WAIT seconds before closing the connection after receiving
+# a FIN from the server.
+# Typical values are 30 seconds, 1 minute, and 2 minutes.
+TIME_WAIT = 30
 
 
 class SimplexTCPClient:
@@ -87,14 +93,43 @@ class SimplexTCPClient:
         self._send_ack_with_filesize()
         logger.info(f"====================== ESTABLISHED! ==========================")
         return
+    
+    def send_fin(self):
+        """
+        The only case where the client initiates a connection termination is when the client
+        has retransmitted a segment MAX_RETRIES times.
+        
+        If a segment's retransmission limit is hit, the client will:
+        - Send a FIN segment to the server.
+        - Wait for an ACK from the server.
+        - Wait for the server to send its own FIN segment and send an ACK.
+        - Wait for TIME_WAIT seconds before closing the connection.
+        """
+        # Send a FIN segment to the server
+        fin_segment = self.create_
+        logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server...")
+        
+        # Wait for ACk and send nothing
+        logger.info(f"Entered FIN_WAIT_2 state: received ACK from server...")
+        
+        # Wait for the server to send its own FIN segment and send an ACK.
+        logger.info(f"Entered TIME_WAIT state: received FIN from server and sending ACK back...")
+        
+        # Wait for TIME_WAIT seconds before closing the connection.
+        time.sleep(TIME_WAIT)
+        
+        # Deallocate resources.
+        logger.info(f"Closing connection. Goodbye...")
+        self.socket.close()
+        pass
 
     def send_file_gbn(self):
         """
         Go-Back-N sender.
         """
-        # open another file for testing TODO
-        test_file = open("test_file", "wb")
-
+        
+        # Send base denotes the sequence number of the oldest unacknowledged segment.
+        # This is initialized to the client's 
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
         window = []
@@ -103,24 +138,24 @@ class SimplexTCPClient:
         with open(self.file, "rb") as file:
 
             sent_new_payload = True
-
+            done_reading = False
             while True:
 
                 # Don't increment the file pointer unless we are sending a new payload.
-                if sent_new_payload:
+                if sent_new_payload and not done_reading:
                     payload = file.read(MSS)
 
-                logger.info(f"current payload: {payload}")
-
+                # logger.info(f"current payload: {payload}")
+                
+                # Payload will be empty when we reach the end of the file.
                 if not payload:
-                    logger.info(f"Reached end of file.")
-                    test_file.close()
-                    return
+                    logger.info(f"Reached end of file. Sending outstanding segments...")
+                
 
                 # Fill the window with segments until it is full and send all segments.
-                if next_seq_num < send_base + self.windowsize:
+                if next_seq_num < send_base + (self.windowsize // MSS):
                     logger.info(
-                        f"Condition 1: {next_seq_num} < {send_base} + {self.windowsize}"
+                        f"Condition 1: {next_seq_num} < {send_base} + {self.windowsize // MSS}"
                     )
                     # Send the next segment
                     segment = self.create_tcp_segment(
@@ -133,7 +168,7 @@ class SimplexTCPClient:
                     self.socket.sendto(segment, self.proxy_address)
                     sent_new_payload = True
                     window.append(segment)
-                    next_seq_num += len(payload)
+                    next_seq_num += 1
                 else:
                     sent_new_payload = False
                     try:
@@ -247,8 +282,8 @@ class SimplexTCPClient:
         Generate random sequence number, which will be the client's ISN that will be incremented
         for each segment sent.
         """
-        # self.client_isn = random.randint(0, 2**32 - 1)
-        self.client_isn = 0
+        self.client_isn = random.randint(0, 2**32 - 1)
+        # self.client_isn = 0
         logger.info(f"Client ISN: {self.client_isn}")
 
         # Create SYN segment with no payload, SYN flag set, and random sequence number. We
