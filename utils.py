@@ -32,6 +32,7 @@ MSS = 40
 MAX_RETRIES = 6
 INITIAL_TIMEOUT = 0.5
 
+
 class SimplexTCPHeader:
     """
     Formats a TCP header

@@ -85,26 +85,27 @@ class SimplexTCPServer:
 
         # TODO: change naming. This is actually the segment, not just the header.
         return tcp_header
-    
+
     def send_fin(self):
         """
         Called when the server is done receiving the file. If instead we send a FIN when the client is done
         sending the file, there is a possibility that the server has not finished receiving the entire
         file.
         """
-        
+
         pass
-    
+
     def _respond_to_fin(self):
         """
         Called when the server receives a FIN from the client.
-        
+
         The server will:
         - Receive the FIN (this function gets called) and respond with an ACK --> enters CLOSE_WAIT state
         - Send its own FIN --> enters LAST_ACK state
         - Receive an ACK and do nothing --> enters CLOSED state
         """
-        """
+
+        pass
 
     def receive_file_gbn(self):
         """
@@ -117,14 +118,11 @@ class SimplexTCPServer:
         correctly received, resulting in duplicate ACKs (acks for packets
         the server has already ACkd for case 2.
         """
-        # File name will be "received_file" + file extension
-        # file_extension = self.file.split(".")[-1]
-        # file_name = "recvd_file." + file_extension
+        # Data received from the client will be written to "recvd_file"
         file_name = "recvd_file"
 
         # Initialize GBN variables
         next_seq_num = self.client_isn + 4 + 1
-        next_expected_seq_num = self.client_isn + 2
         last_byte_recvd = 0
 
         # Open the new file for writing. Keep writing data to the file until
@@ -133,9 +131,7 @@ class SimplexTCPServer:
         with open(file_name, "wb") as file:
             while last_byte_recvd < self.file_size:
                 try:
-                    segment, client_address = self.socket.recvfrom(
-                        2048
-                    )  # catch timeout
+                    segment, client_address = self.socket.recvfrom(2048)
                 except timeout:
                     logger.warning(f"Timeout occurred receiving data. Retrying...")
                     continue
@@ -157,7 +153,7 @@ class SimplexTCPServer:
                     ack = self.create_tcp_segment(
                         payload=b"", seq_num=0, ack_num=next_seq_num, flags={"ACK"}
                     )
-                    next_seq_num += 1 # len(payload)
+                    next_seq_num += 1
                 else:
                     logger.warning(
                         f"Received corrupted or out of order segment with seq num {seq_num} and payload {payload} \n Sending dup ACK for seq num {next_seq_num - 1}"
@@ -343,7 +339,7 @@ class SimplexTCPServer:
 
     def shutdown_server(self):
         pass
-    
+
     def run(self):
         self.establish_connection()
         self.receive_file_gbn()

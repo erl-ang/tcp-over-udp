@@ -93,12 +93,12 @@ class SimplexTCPClient:
         self._send_ack_with_filesize()
         logger.info(f"====================== ESTABLISHED! ==========================")
         return
-    
+
     def send_fin(self):
         """
         The only case where the client initiates a connection termination is when the client
         has retransmitted a segment MAX_RETRIES times.
-        
+
         If a segment's retransmission limit is hit, the client will:
         - Send a FIN segment to the server.
         - Wait for an ACK from the server.
@@ -108,16 +108,18 @@ class SimplexTCPClient:
         # Send a FIN segment to the server
         fin_segment = self.create_
         logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server...")
-        
+
         # Wait for ACk and send nothing
         logger.info(f"Entered FIN_WAIT_2 state: received ACK from server...")
-        
+
         # Wait for the server to send its own FIN segment and send an ACK.
-        logger.info(f"Entered TIME_WAIT state: received FIN from server and sending ACK back...")
-        
+        logger.info(
+            f"Entered TIME_WAIT state: received FIN from server and sending ACK back..."
+        )
+
         # Wait for TIME_WAIT seconds before closing the connection.
         time.sleep(TIME_WAIT)
-        
+
         # Deallocate resources.
         logger.info(f"Closing connection. Goodbye...")
         self.socket.close()
@@ -127,9 +129,9 @@ class SimplexTCPClient:
         """
         Go-Back-N sender.
         """
-        
+
         # Send base denotes the sequence number of the oldest unacknowledged segment.
-        # This is initialized to the client's 
+        # This is initialized to the client's
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
         window = []
@@ -146,11 +148,10 @@ class SimplexTCPClient:
                     payload = file.read(MSS)
 
                 # logger.info(f"current payload: {payload}")
-                
+
                 # Payload will be empty when we reach the end of the file.
                 if not payload:
                     logger.info(f"Reached end of file. Sending outstanding segments...")
-                
 
                 # Fill the window with segments until it is full and send all segments.
                 if next_seq_num < send_base + (self.windowsize // MSS):
@@ -209,7 +210,7 @@ class SimplexTCPClient:
         sending file data.
         """
         # Create a TCP segment with the ACK flag set and the file size as the payload.
-        file = open(self.file, "rb")  # TODO: error handling with opening file.
+        file = open(self.file, "rb")
         file_size = os.path.getsize(self.file)
         payload = file_size.to_bytes(4, byteorder="big")
         file.close()
@@ -240,19 +241,13 @@ class SimplexTCPClient:
                     f"received segment with ack number {ack_num}, flags {flags}, and sequence number {seq_num}"
                 )
 
-                # TODO combine on one line
-                if not verify_checksum(
-                    ack
-                ):  # TODO: make sure logging level sare consistent
+                # TODO: make sure logging level sare consistent
+                if not verify_checksum(ack):
                     logger.error(f"Checksum verification failed.")
                     continue
-                logger.debug(f"Checksum verification passed for segment!")
-
                 if not verify_flags(flags_byte=flags, expected_flags={"ACK"}):
                     logger.error(f"Flag verification failed.")
                     continue
-                logger.debug(f"Flag verification passed for segment!")
-
                 # Check if the ACK number is correct.
                 if ack_num != self.client_isn + len(payload) + 1:
                     logger.error(
@@ -311,17 +306,14 @@ class SimplexTCPClient:
                     f"received segment with seq number {seq_num}, and flags {flags}"
                 )
 
-                if not verify_checksum(
-                    synack_segment
-                ):  # TODO: make sure logging level sare consistent
-                    logger.error(f"Checksum verification failed for SYNACK segment")
+                if not verify_checksum(synack_segment):
+                    logger.error(f"Checksum verification failed.")
                     continue
-                logger.info(f"Checksum verification passed for segment! SYNACK")
-
                 if not verify_flags(flags_byte=flags, expected_flags={"SYN", "ACK"}):
-                    logger.error(f"SYNACK segment does not have SYN and ACK flag set")
+                    logger.error(
+                        f"Received segment does not have SYN and ACK flag set."
+                    )
                     continue
-                logger.info(f"Flag verification passed for segment!")
 
                 # Check if the ACK number is correct.
                 if ack_num != self.client_isn + 1:
