@@ -35,7 +35,9 @@ MAX_RETRIES = 7
 INITIAL_TIMEOUT = 1
 ALPHA = 0.125  # weight for the EWMA of SampleRTT values
 BETA = 0.25  # weight for the EWMA of | EstimatedRTT - SampleRTT | values, "variability"
-TIMEOUT_MULTIPLIER = 2  # used to increase the timeout after each retransmission
+TIMEOUT_MULTIPLIER = (
+    1.1  # used to increase the timeout after each retransmission, traditinoally 2
+)
 
 # The program that wants to terminate the connection will wait TIME_WAIT seconds before closing the connection after receiving
 # a FIN from the other side.

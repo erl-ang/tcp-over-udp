@@ -6,7 +6,9 @@ from utils import (
     are_flags_set,
     validate_args,
     unpack_segment,
-    update_timeout,
+    BETA,
+    ALPHA,
+    TIMEOUT_MULTIPLIER,
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
@@ -305,9 +307,19 @@ class SimplexTCPServer:
                 elif are_flags_set(flags, {"FIN"}):
                     logger.info(f"Received FIN from client...")
                     self.respond_to_fin()
-                else:
-                    logger.warning(
-                        f"Received corrupted or out of order segment with seq num {seq_num}. Sending dup ACK for seq num {next_seq_num - 1}"
+                elif not verify_checksum(segment):
+                    logger.info(
+                        f"Received corrupted segment with seq num {seq_num}. Sending dup ACK for seq num {next_seq_num - 1}"
+                    )
+                    ack = self.create_tcp_segment(
+                        payload=b"",
+                        seq_num=0,
+                        ack_num=(next_seq_num - 1),
+                        flags={"ACK"},
+                    )
+                else:  # Out of order packet
+                    logger.info(
+                        f"Received out of order packet with seq num {seq_num}. Sending dup ACK for seq num {next_seq_num - 1}"
                     )
                     ack = self.create_tcp_segment(
                         payload=b"",
@@ -337,7 +349,8 @@ class SimplexTCPServer:
         logger.info(f"Sending SYNACK segment to client...")
 
         # The ACK will contain the file size
-        self.server_isn = random.randint(0, 2**32 - 1)
+        self.server_isn = 0
+        # self.server_isn = random.randint(0, 2**32 - 1)
         payload = self._send_and_wait_for_ack(
             payload=b"", flags={"SYN", "ACK"}, expected_flags={"ACK"}
         )

@@ -22,12 +22,12 @@ import traceback
 import time
 
 logger = logging.getLogger("TCPClient")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 # To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(logging.DEBUG)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
@@ -112,6 +112,9 @@ class SimplexTCPClient:
         )
         timeout_interval = self.estimated_rtt + (4 * self.dev_rtt)
         self.socket.settimeout(timeout_interval)
+        logger.info(
+            f"New SampleRTT: Updated timeout interval to {timeout_interval} seconds"
+        )
         return
 
     def update_timeout_on_timeout(self):
@@ -125,6 +128,9 @@ class SimplexTCPClient:
         """
         timeout_interval = self.socket.gettimeout()
         self.socket.settimeout(timeout_interval * TIMEOUT_MULTIPLIER)
+        logger.info(
+            f"Timeout out: updated timeout interval to {timeout_interval * TIMEOUT_MULTIPLIER} seconds"
+        )
         return
 
     def establish_connection(self):
@@ -208,6 +214,7 @@ class SimplexTCPClient:
                 logger.info(f"Entered FIN_WAIT_2 state: received ACK from server.")
                 break
             except timeout:
+                self.update_timeout_on_timeout()
                 logger.info(
                     f"Timeout occurred while waiting for FINACK. Retransmitting FIN segment..."
                 )
@@ -259,6 +266,7 @@ class SimplexTCPClient:
                 self.socket.sendto(ack_segment, self.proxy_address)
                 break
             except timeout:
+                self.update_timeout_on_timeout()
                 logger.error(
                     f"Timeout occurred while waiting for FIN. Waiting longer..."
                 )
@@ -305,6 +313,7 @@ class SimplexTCPClient:
                     logger.error(f"Verification failed. Dropping packet...")
                     continue
             except timeout:
+                self.update_timeout_on_timeout()
                 logger.info(
                     f"Timeout occurred while waiting for FINACK. Retransmitting FIN segment..."
                 )
@@ -401,7 +410,7 @@ class SimplexTCPClient:
                                 logger.debug(
                                     f"Received ACK {ack_num}. SampleRTT measured: {sample_rtt} seconds."
                                 )
-                                self.update_timeout(sample_rtt)
+                                self.update_timeout_on_rtt(sample_rtt)
                                 seq_num_rtt = -1
                                 start = -1
                             # If it has been retransmitted, cancel the timer. We just won't have
@@ -452,6 +461,7 @@ class SimplexTCPClient:
                                 num_dup_acks = 0
 
                     except timeout:
+                        self.update_timeout_on_timeout()
                         # If the timer expires, then resend all segments in the window and increment
                         # their retry count.
                         # If the segment hit the retransmission limit for a packet, then terminate
@@ -537,10 +547,10 @@ class SimplexTCPClient:
                 # Only update the timeout value if we have a valid sample RTT.
                 if retry_count == 1:
                     sample_rtt = time.time() - start
-                    self.update_timeout(sample_rtt)
+                    self.update_timeout_on_rtt(sample_rtt)
                 break
             except timeout:
-                # TODO: increase timeout acc. to formula in book.
+                self.update_timeout_on_timeout()
                 logger.info(f"Timeout occurred while finishing handshake.")
                 continue
             except Exception as e:
@@ -560,7 +570,8 @@ class SimplexTCPClient:
         Generate random sequence number, which will be the client's ISN that will be incremented
         for each segment sent.
         """
-        self.client_isn = random.randint(0, 2**32 - 1)
+        self.client_isn = 0
+        # self.client_isn = random.randint(0, 2**32 - 1)
         logger.debug(f"Client ISN: {self.client_isn}")
 
         # Create SYN segment with no payload, SYN flag set, and random sequence number. We
@@ -610,14 +621,14 @@ class SimplexTCPClient:
                 # Only use the SampleRTT measured if it is not a retransmission.
                 if retry_count == 1:
                     sample_rtt = time.time() - start
-                    self.update_timeout(sample_rtt)
+                    self.update_timeout_on_rtt(sample_rtt)
 
                 logger.info(
                     f"Received SYNACK segment from server with server ISN: {self.server_isn}"
                 )
                 break
             except timeout:
-                # TODO: increase timeout acc. to formula in book.
+                self.update_timeout_on_timeout()
                 logger.info(f"Timeout occurred while receiving SYNACK segment")
                 continue
             except Exception as e:
