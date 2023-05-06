@@ -270,6 +270,7 @@ class SimplexTCPClient:
         #   Format: [(segment, num_retries), ...]
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
+        num_dup_acks = 0
         window = []
 
         logger.info(f"Sending file {self.file} to server...")
@@ -324,9 +325,22 @@ class SimplexTCPClient:
                             )
                             self.respond_to_fin()
                         else:
-                            logger.info(
+                            logger.info(f"Received duplicate ACK...")
+                            logger.debug(
                                 f"Received duplicate ACK with ack_num {ack_num}. Expecting ack_num {send_base}."
                             )
+                            num_dup_acks += 1
+
+                            # Part of fast Retransmit. If we receive 3 duplicate ACKs, then resend the segment
+                            # with the lowest sequence number in the window.
+                            if num_dup_acks == 3:
+                                logger.info(
+                                    f"Received 3 duplicate ACKs. Resending segment with seq_num {send_base}"
+                                )
+                                segment, num_retries = window[0]
+                                self.socket.sendto(segment, self.proxy_address)
+                                num_dup_acks = 0
+
                     except timeout:
                         # If the timer expires, then resend all segments in the window and increment
                         # their retry count.
