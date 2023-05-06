@@ -3,16 +3,16 @@ from socket import *
 from utils import (
     SimplexTCPHeader,
     verify_checksum,
-    verify_flags,
+    are_flags_set,
     validate_args,
     unpack_segment,
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
+    TIME_WAIT,
 )
 import random
 import logging
-import struct
 import sys
 import os
 import traceback
@@ -35,11 +35,6 @@ fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
 
-# The client waits TIME_WAIT seconds before closing the connection after receiving
-# a FIN from the server.
-# Typical values are 30 seconds, 1 minute, and 2 minutes.
-TIME_WAIT = 30
-
 
 class SimplexTCPClient:
     """ """
@@ -48,7 +43,6 @@ class SimplexTCPClient:
         self, file, address_of_udpl, port_number_of_udpl, windowsize, ack_port_number
     ):
         self.file = file
-        # self.proxy_address = ("0.0.0.0", 4444) For testing
         self.proxy_address = (address_of_udpl, port_number_of_udpl)
         self.windowsize = windowsize
         self.ack_port_number = ack_port_number
@@ -59,7 +53,7 @@ class SimplexTCPClient:
 
         # Initialize TCP state variables. Typically, this is done in the
         # three-way handshake, but they are provided here for readability.
-        self.client_isn = 0
+        self.client_isn = -1
         self.socket.settimeout(INITIAL_TIMEOUT)
         self.server_isn = -1
         self.expected_ack_num = -1
@@ -103,19 +97,14 @@ class SimplexTCPClient:
         - Send a FIN segment to the server.
         - Wait for an ACK from the server.
         - Wait for the server to send its own FIN segment and send an ACK.
-        - Wait for TIME_WAIT seconds before closing the connection.
+        - Wait for TIME_WAIT seconds
+        - Send an ACK to the server before closing the connection.
         """
         # Send a FIN segment to the server
-        fin_segment = self.create_
-        logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server...")
-
-        # Wait for ACk and send nothing
-        logger.info(f"Entered FIN_WAIT_2 state: received ACK from server...")
+        self._send_fin_and_wait_for_ack()
 
         # Wait for the server to send its own FIN segment and send an ACK.
-        logger.info(
-            f"Entered TIME_WAIT state: received FIN from server and sending ACK back..."
-        )
+        self._wait_for_fin_and_send_ack()
 
         # Wait for TIME_WAIT seconds before closing the connection.
         time.sleep(TIME_WAIT)
@@ -123,15 +112,162 @@ class SimplexTCPClient:
         # Deallocate resources.
         logger.info(f"Closing connection. Goodbye...")
         self.socket.close()
-        pass
+        sys.exit(0)
+
+    def _send_fin_and_wait_for_ack(self):
+        """
+        Helper function for send_fin
+        """
+        fin_segment = self.create_tcp_segment(
+            payload=b"",
+            seq_num=0,
+            ack_num=0,
+            flags={"FIN"},
+        )
+
+        # Transmit FIN segments until we receive an FINACK from the server, retransmitting
+        # if the socket times out.
+        retry_count = 0
+        for _ in range(MAX_RETRIES):
+            retry_count += 1
+
+            self.socket.sendto(fin_segment, self.proxy_address)
+            logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server.")
+
+            try:
+                fin_ack, _ = self.socket.recvfrom(self.windowsize)
+                _, _, flags, _, _ = unpack_segment(fin_ack)
+
+                if not verify_checksum(fin_ack) or not are_flags_set(
+                    flags, {"ACK", "FIN"}
+                ):
+                    logger.error(f"Verification failed. Dropping packet...")
+                    continue
+
+                logger.info(f"Entered FIN_WAIT_2 state: received ACK from server.")
+                break
+            except timeout:
+                logger.info(
+                    f"Timeout occurred while waiting for FINACK. Retransmitting FIN segment..."
+                )
+                continue
+            except Exception as e:
+                logger.warning(f"Exception occurred while terminating connection {e}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                continue
+
+        if retry_count >= MAX_RETRIES:
+            logger.error(
+                f"Maximum number of retries reached while sending FIN. Aborting..."
+            )
+            exit(0)
+        return
+
+    def _wait_for_fin_and_send_ack(self):
+        """
+        Helper function for the second leg of send_fin()
+        """
+        # Note: we are guaranteed to receive a FIN from
+        # the server per the assignment spec. Otherwise, we can
+        # avoid infinitely waiting by changing the infinite loop to
+        # a loop with a maximum number of retries like in _send_fin_and_wait_for_ack().
+        while True:
+            try:
+                fin_segment, _ = self.socket.recvfrom(self.windowsize)
+
+                # Verify this is a FIN segment.
+                _, _, flags, _, _ = unpack_segment(fin_segment)
+                if not verify_checksum(fin_segment) and not are_flags_set(
+                    flags, {"FIN"}
+                ):
+                    logger.error(f"Verification failed. Dropping packet...")
+                    continue
+
+                # Correctly received FIN segment from server. Send ACK back. Note that we don't
+                # need to retransmit this ACK because the server will close its side of the
+                # connection upon sending its FIN segment.
+                logger.info(
+                    f"Entered TIME_WAIT state: received FIN from server and sending ACK back..."
+                )
+                ack_segment = self.create_tcp_segment(
+                    payload=b"",
+                    seq_num=0,
+                    ack_num=0,
+                    flags={"ACK", "FIN"},
+                )
+                self.socket.sendto(ack_segment, self.proxy_address)
+                break
+            except timeout:
+                logger.error(
+                    f"Timeout occurred while waiting for FIN. Waiting longer..."
+                )
+                continue
+        return
+
+    def respond_to_fin(self):
+        """
+        Called when the client receives a FIN from the server.
+
+        The client will:
+        - Receive the FIN (invoking this function) and respond with an ACK --> enters CLOSE_WAIT state.
+        - Send its own FIN --> enters LAST_ACK state
+        - Receive an ACK and send nothing --> CLOSED state
+        """
+        fin_ack = self.create_tcp_segment(
+            payload=b"", seq_num=0, ack_num=0, flags={"FIN", "ACK"}
+        )
+
+        # This FINACK may get lost, but the client has no way of knowing if
+        # if gets lost because the server will only respond after the client
+        # sends another message: the last FIN.
+        # In both cases (where the FINACK gets dropped), we send the FIN.
+        # In the case it gets lost, the server will handle receiving the FIN
+        # but not the previous FINACK.
+        self.socket.sendto(fin_ack, self.proxy_address)
+        logger.info(f"Entered CLOSE_WAIT state: sent FINACK to server.")
+
+        # Although the textbook specifies that the non-initiator's side of the
+        # TCP connection should be closed after sending the last FIN, because the
+        # FIN segment could be dropped, we wait for an ACK from the server
+        # to ensure that the server has received the FIN segment.
+        fin = self.create_tcp_segment(payload=b"", seq_num=0, ack_num=0, flags={"FIN"})
+        retry_count = 0
+        for _ in range(MAX_RETRIES):
+            retry_count += 1
+
+            self.socket.sendto(fin_ack, self.proxy_address)
+            try:
+                ack, _ = self.socket.recvfrom(self.windowsize)
+                _, _, flags, _, _ = unpack_segment(ack)
+
+                if not verify_checksum(ack) or not are_flags_set(flags, {"ACK", "FIN"}):
+                    logger.error(f"Verification failed. Dropping packet...")
+                    continue
+            except timeout:
+                logger.info(
+                    f"Timeout occurred while waiting for FINACK. Retransmitting FIN segment..."
+                )
+
+        if retry_count >= MAX_RETRIES:
+            logger.info(
+                f"Waited too long for FINACK. Aborting to avoid half-open connections..."
+            )
+
+        # Receive a FINACK from the server or the FIN segment has hit its retransmission limit. Either way, we can exit.
+        logger.info(f"Goodbye...")
+        sys.exit(0)
 
     def send_file_gbn(self):
         """
         Go-Back-N sender.
         """
-
         # Send base denotes the sequence number of the oldest unacknowledged segment.
-        # This is initialized to the client's
+        # This is initialized to TODO
+        # Window is a list of segments that have been sent but not yet acknowledged, along with
+        # the number of times they have been retransmitted. num_retries is initialized to 0.
+        # When a segment hits max_retries, send_fin() is called to terminate the connection as
+        # the network is probably pretty ass at the moment.
+        #   Format: [(segment, num_retries), ...]
         send_base = self.client_isn + 4 + 1
         next_seq_num = self.client_isn + 4 + 1
         window = []
@@ -146,8 +282,6 @@ class SimplexTCPClient:
                 # Don't increment the file pointer unless we are sending a new payload.
                 if sent_new_payload and not done_reading:
                     payload = file.read(MSS)
-
-                # logger.info(f"current payload: {payload}")
 
                 # Payload will be empty when we reach the end of the file.
                 if not payload:
@@ -168,33 +302,58 @@ class SimplexTCPClient:
 
                     self.socket.sendto(segment, self.proxy_address)
                     sent_new_payload = True
-                    window.append(segment)
+                    window.append((segment, 0))
                     next_seq_num += 1
                 else:
                     sent_new_payload = False
                     try:
-                        ack, _ = self.socket.recvfrom(2048)
+                        ack, _ = self.socket.recvfrom(self.windowsize)
                         _, ack_num, flags, _, _ = unpack_segment(ack)
-                        if ack_num >= send_base:
+                        if not verify_checksum(ack):
+                            logger.error(f"Verification failed. Dropping packet...")
+                            continue
+                        if ack_num >= send_base and are_flags_set(flags, {"ACK"}):
                             logger.info(
                                 f"Received ACK {ack_num}. Moving window forward to [{ack_num + 1}, {next_seq_num - 1}]"
                             )
                             logger.info(
-                                f"removing segment with payload {window[0][20:]}"
+                                f"removing segment with payload {window[0][0][20:]}"
                             )
                             window.pop(0)
                             send_base = ack_num + 1
+                        elif are_flags_set(flags, {"FIN"}):
+                            logger.info(
+                                "Received FIN from server. Closing connection..."
+                            )
+                            self.respond_to_fin()
                         else:
                             logger.info(
                                 f"Received duplicate ACK with ack_num {ack_num}. Expecting ack_num {send_base}."
                             )
                     except timeout:
-                        # If the timer expires, then resend all segments in the window.
+                        # If the timer expires, then resend all segments in the window and increment
+                        # their retry count.
                         logger.warning(
                             f"Timeout expired. Resending all segments in window [send_base, nextseqnum -1]: [{send_base}, {next_seq_num - 1}]..."
                         )
-                        for segment in window:
-                            logger.info(
+
+                        # If the segment hit the retransmission limit for a packet, then terminate
+                        # the connection.
+                        for i in range(len(window)):
+                            segment, num_retries = window[i]
+                            num_retries += 1
+
+                            if num_retries >= MAX_RETRIES:
+                                logger.warning(
+                                    f"Max retransmissions reached. Terminating connection..."
+                                )
+                                self.send_fin()
+                            window[i] = (segment, num_retries)
+
+                        # Otherwise, resend all the segments and increment their retry counts
+                        logger.info(f"Resending segments in window...")
+                        for segment, num_retries in window:
+                            logger.debug(
                                 f"resending segment with payload {segment[20:]}"
                             )
                             self.socket.sendto(segment, self.proxy_address)
@@ -226,7 +385,7 @@ class SimplexTCPClient:
         # retransmission and reaching the maximum number of retries.
         retry_count = 0
 
-        for _ in range(MAX_RETRIES + 1):
+        for _ in range(MAX_RETRIES):
             retry_count += 1
             self.socket.sendto(segment, self.proxy_address)
             logger.info(
@@ -234,7 +393,7 @@ class SimplexTCPClient:
             )
 
             try:
-                ack, server_address = self.socket.recvfrom(2048)
+                ack, _ = self.socket.recvfrom(self.windowsize)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(ack)
                 logger.info(
@@ -245,7 +404,7 @@ class SimplexTCPClient:
                 if not verify_checksum(ack):
                     logger.error(f"Checksum verification failed.")
                     continue
-                if not verify_flags(flags_byte=flags, expected_flags={"ACK"}):
+                if not are_flags_set(flags_byte=flags, expected_flags={"ACK"}):
                     logger.error(f"Flag verification failed.")
                     continue
                 # Check if the ACK number is correct.
@@ -262,12 +421,12 @@ class SimplexTCPClient:
                 continue
             except Exception as e:
                 logger.warning(f"Exception occurred while finishing handshake: {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
-        if retry_count > MAX_RETRIES:
-            logger.error(f"Maximum number of retries reached. Aborting...")
-            sys.exit(1)
+        if retry_count >= MAX_RETRIES:
+            logger.error(f"Maximum number of retries reached...")
+            self.send_fin()
 
         return
 
@@ -278,8 +437,7 @@ class SimplexTCPClient:
         for each segment sent.
         """
         self.client_isn = random.randint(0, 2**32 - 1)
-        # self.client_isn = 0
-        logger.info(f"Client ISN: {self.client_isn}")
+        logger.debug(f"Client ISN: {self.client_isn}")
 
         # Create SYN segment with no payload, SYN flag set, and random sequence number. We
         # set the ack number to 0 because we are not acknowledging any data from the server.
@@ -291,15 +449,13 @@ class SimplexTCPClient:
         # retransmission and reaching the maximum number of retries.
         retry_count = 0
 
-        for _ in range(MAX_RETRIES + 1):
+        for _ in range(MAX_RETRIES):
             retry_count += 1
             self.socket.sendto(syn_segment, self.proxy_address)
             logger.info(f"Entered SYN_SENT state: sent SYN segment to server")
 
             try:
-                # TODO: change buffer size
-
-                synack_segment, server_address = self.socket.recvfrom(2048)
+                synack_segment, _ = self.socket.recvfrom(self.windowsize)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(synack_segment)
                 logger.info(
@@ -309,7 +465,7 @@ class SimplexTCPClient:
                 if not verify_checksum(synack_segment):
                     logger.error(f"Checksum verification failed.")
                     continue
-                if not verify_flags(flags_byte=flags, expected_flags={"SYN", "ACK"}):
+                if not are_flags_set(flags_byte=flags, expected_flags={"SYN", "ACK"}):
                     logger.error(
                         f"Received segment does not have SYN and ACK flag set."
                     )
@@ -339,9 +495,9 @@ class SimplexTCPClient:
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 continue
 
-        if retry_count > MAX_RETRIES:
-            logger.error(f"Maximum number of retries reached. Aborting...")
-            sys.exit(1)
+        if retry_count >= MAX_RETRIES:
+            logger.warning(f"Maximum number of retries reached. Aborting...")
+            sys.exit(0)
 
         return self.server_isn
 
@@ -352,12 +508,12 @@ class SimplexTCPClient:
         :param payload: payload to be sent to the server
         :param flags: set of flags to be set in the TCP header
         """
-        logger.info(
+        logger.debug(
             f"Sending segment with payload {payload}, flags {flags}, ack number {ack_num}, seq number {seq_num}"
         )
 
         # Create the segment without the checksum.
-        tcp_segment = SimplexTCPHeader(
+        tcp_header = SimplexTCPHeader(
             src_port=self.ack_port_number,
             dest_port=self.proxy_address[1],
             seq_num=seq_num,
@@ -367,28 +523,16 @@ class SimplexTCPClient:
         )
 
         # Attach the TCP header to payload.
-        tcp_header = tcp_segment.make_tcp_header(payload)
+        tcp_segment = tcp_header.make_tcp_segment(payload)
 
-        # TODO: naming is a bit confusing. tcp_header is actually the entire segment.
-        return tcp_header
-
-    def shutdown(self):
-        """
-        Close all open sockets and files.
-        """
-        self.socket.close()
-        # TODO close file, maybe instance variable for file?
-
-        logger.info(f"Shutting down client...")
-        return
+        return tcp_segment
 
     def run(self):
+        """
+        Run the TCP client to send the file to the server.
+        """
         self.establish_connection()
         self.send_file_gbn()
-
-        # After the client is finished sending the file, it sends a FIN segment to the server.
-        # it will keep sending the FIN segment until it receives an ACK.
-        # self.send_fin()
         return
 
 
@@ -404,11 +548,11 @@ def main():
     parser.add_argument("ack_port_number", type=int, help="port number for ACKs")
     args = parser.parse_args()
 
-    print("=============================")
-    print("TCPClient Parameters:")
+    logger.info("=============================")
+    logger.info("TCPClient Parameters:")
     for arg in vars(args):
-        print(f"{arg}: {getattr(args, arg)}")
-    print("==============================")
+        logger.info(f"{arg}: {getattr(args, arg)}")
+    logger.info("==============================")
 
     # Validate command line arguments before allocating TCP state variables.
     if not validate_args(args, is_client=True):

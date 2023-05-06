@@ -1,6 +1,5 @@
 import logging
 from typing import Set
-import sys
 import ipaddress
 import os
 import struct
@@ -29,8 +28,14 @@ MSS = 40
 
 # Implementations of TCP usually have a maximum number of retransmissions for a segment.
 # 5-7 is a common valid.
-MAX_RETRIES = 6
+MAX_RETRIES = 7
 INITIAL_TIMEOUT = 0.5
+
+# The program that wants to terminate the connection will wait TIME_WAIT seconds before closing the connection after receiving
+# a FIN from the other side.
+# Typical values are 30 seconds, 1 minute, and 2 minutes. I keep
+# at 5 seconds so I don't have to wait too long.
+TIME_WAIT = 5
 
 
 class SimplexTCPHeader:
@@ -56,7 +61,7 @@ class SimplexTCPHeader:
         - seq_num: Sequence number
         - ack_num: Acknowledgement number
         - recv_window: Receive window
-        - flags: Flags, a set of strings. Possible values are "ACK", "RST", "SYN", and "FIN".
+        - flags: Flags, a set of strings. Possible values are "ACK", "SYN", and "FIN".
         """
         # Source and destination port numbers are used for multiplexing
         # and demultiplexing.
@@ -78,8 +83,7 @@ class SimplexTCPHeader:
         # as they are used for ECN and indicating the presence of urgent
         # data.
         for flag in flags:
-            if flag not in {"ACK", "RST", "SYN", "FIN"}:
-                # TODO: test this
+            if flag not in {"ACK", "SYN", "FIN"}:
                 logger.warning(f"Invalid flag {flag} specified. Removing from flags.")
                 flags.remove(flag)
         self.flags = flags
@@ -93,21 +97,20 @@ class SimplexTCPHeader:
 
         return
 
-    def make_tcp_header(self, payload: bytes):
+    def make_tcp_segment(self, payload: bytes):
         """
-        Returns a bytearray representing the TCP header with the checksum.
+        Returns a bytearray representing the TCP header with the checksum
+        and the payload.
 
         Note that the checksum is computed over the entire segment, including
         the TCP header (with the checksum field set to 0) and the payload.
         """
-        # TODO: change naming to tcp_header
         tcp_segment = self._make_tcp_header_without_checksum()
         tcp_segment.extend(payload)
         tcp_segment[16:18] = calculate_checksum(tcp_segment)
         logger.debug(
             f"Putting checksum in header: {int.from_bytes(tcp_segment[16:18], byteorder='big')}"
         )
-
         return tcp_segment
 
     def _make_tcp_header_without_checksum(self):
@@ -324,7 +327,7 @@ def verify_checksum(segment):
     return calculated_checksum == segment_checksum
 
 
-def verify_flags(flags_byte, expected_flags=None):
+def are_flags_set(flags_byte, expected_flags=None):
     """
     Verify that the flags received match the expected flags by
     parsing the 8-bit flags field in the TCP header.
@@ -344,18 +347,14 @@ def verify_flags(flags_byte, expected_flags=None):
     # flag bit is set in the TCP header for each expected flag.
     if "ACK" in expected_flags:
         if not flags_byte & ACK_MASK:
-            logger.error("Expected ACK but received message with ACK flag not set.")
             return False
     if "RST" in expected_flags:
         if not flags_byte & RST_MASK:
-            logger.error("Expected RST but received message with RST flag not set.")
             return False
     if "SYN" in expected_flags:
         if not flags_byte & SYN_MASK:
-            logger.error("Expected SYN but received message with SYN flag not set.")
             return False
     if "FIN" in expected_flags:
         if not flags_byte & FIN_MASK:
-            logger.error("Expected FIN but received message with FIN flag not set.")
             return False
     return True
