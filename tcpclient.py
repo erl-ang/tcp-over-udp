@@ -22,6 +22,7 @@ import traceback
 import time
 
 logger = logging.getLogger("TCPClient")
+# We can set the level to logging.INFO for less verbose logging.
 logger.setLevel(logging.DEBUG)
 
 # To log on stdout, we create console handler with a higher log level, format it,
@@ -34,7 +35,7 @@ logger.addHandler(ch)
 
 # Do the same to log to a file.
 fh = logging.FileHandler("tcpclient.log", mode="w")
-fh.setLevel(logging.INFO)
+fh.setLevel(logging.DEBUG)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
 
@@ -73,7 +74,7 @@ class SimplexTCPClient:
         self.socket.settimeout(INITIAL_TIMEOUT)
         self.server_isn = -1
 
-        # These will be actually initialized after the receipt of a valid (non-retransmitted) ACK.
+        # These will be initialized to their real (estimated) values after the receipt of a valid (non-retransmitted) ACK.
         self.estimated_rtt = -1
         self.dev_rtt = -1
 
@@ -129,7 +130,7 @@ class SimplexTCPClient:
         timeout_interval = self.socket.gettimeout()
         self.socket.settimeout(timeout_interval * TIMEOUT_MULTIPLIER)
         logger.info(
-            f"Timeout out: updated timeout interval to {timeout_interval * TIMEOUT_MULTIPLIER} seconds"
+            f"Timed out: updated timeout interval to {timeout_interval * TIMEOUT_MULTIPLIER} seconds"
         )
         return
 
@@ -379,6 +380,7 @@ class SimplexTCPClient:
                     # timer if it needs to be retransmitted.
                     if measuring_rtt == False:
                         measuring_rtt = True
+                        seq_num_rtt = next_seq_num
                         start = time.time()
 
                     self.socket.sendto(segment, self.proxy_address)
@@ -398,7 +400,9 @@ class SimplexTCPClient:
                         # SampleRTT, check if the ACK is for the segment we are measuring and
                         # that it has not been retransmitted. If so, cancel the timer and
                         if ack_num >= send_base and are_flags_set(flags, {"ACK"}):
-
+                            logger.debug(
+                                f"Received ACK {ack_num}, measuring_rtt is {measuring_rtt}, seq_num_rtt is {seq_num_rtt}, window[0][1] is {window[0][1]}"
+                            )
                             if (
                                 measuring_rtt
                                 and seq_num_rtt == ack_num

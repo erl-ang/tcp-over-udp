@@ -21,12 +21,13 @@ import sys
 import time
 
 logger = logging.getLogger("TCPServer")
-logger.setLevel(logging.INFO)
+# We can set the level to logging.INFO for less verbose logging.
+logger.setLevel(logging.DEBUG)
 
 # To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(logging.DEBUG)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
@@ -67,6 +68,11 @@ class SimplexTCPServer:
         self.client_isn = -1
         self.server_isn = -1
         self.windowsize = -1
+
+        # These will be initialized to their real (estimated) values after the
+        # receipt of a valid (non-retranmitted) ACK.
+        self.estimated_rtt = -1
+        self.dev_rtt = -1
         return
 
     def create_and_bind_socket(self):
@@ -103,6 +109,54 @@ class SimplexTCPServer:
         tcp_segment = tcp_header.make_tcp_segment(payload)
 
         return tcp_segment
+
+    def update_timeout_on_rtt(self, sample_rtt: float):
+        """
+        Updates socket timeout values based on the formulas from RFC 6298.
+
+        TimeoutInterval = EstimatedRTT + 4 * DevRTT, where EstimatedRTT
+        is a measure of the average SampleRTT and DevRTT is a measure of the
+        variability of the SampleRTT. Both are weighted averages whose weights
+        can be adjusted in the headers.
+
+        EstimatedRTT = BETA * EstimatedRTT + (1 - BETA) * SampleRTT
+        DevRTT = (1 - ALPHA) * DevRTT + ALPHA * |SampleRTT - EstimatedRTT|
+        """
+        # Upon the receipt of the first valid ACK, the estimated and dev RTTs
+        # need to be initialized as follows. Note that we check if the values
+        # are less than 0 because the values are initialized to -1 in both
+        # the client and server.
+        if self.estimated_rtt < 0 and self.dev_rtt < 0:
+            self.estimated_rtt = sample_rtt
+            self.dev_rtt = sample_rtt / 2
+
+        # Set timeout interval according to RFC 6298.
+        self.estimated_rtt = BETA * self.estimated_rtt + (1 - BETA) * sample_rtt
+        self.dev_rtt = (1 - ALPHA) * self.dev_rtt + ALPHA * abs(
+            sample_rtt - self.estimated_rtt
+        )
+        timeout_interval = self.estimated_rtt + (4 * self.dev_rtt)
+        self.socket.settimeout(timeout_interval)
+        logger.info(
+            f"New SampleRTT: Updated timeout interval to {timeout_interval} seconds"
+        )
+        return
+
+    def update_timeout_on_timeout(self):
+        """
+        Updates socket timeout values by TIMEOUT_MULTIPLIER when a timeout occurs.
+
+        Traditionally, this multiplier set to twice the timeout interval, but we
+        allow flexibility to tweak this to evaluate performance. Greater
+        timeout intervals mean that lost packets will not be retransmitted quickly,
+        but shorter timeout intervals mean that there might be unnecessary retransmissions.
+        """
+        timeout_interval = self.socket.gettimeout()
+        self.socket.settimeout(timeout_interval * TIMEOUT_MULTIPLIER)
+        logger.info(
+            f"Timed out: updated timeout interval to {timeout_interval * TIMEOUT_MULTIPLIER} seconds"
+        )
+        return
 
     def send_fin(self):
         """
@@ -174,6 +228,7 @@ class SimplexTCPServer:
             # Successfully received FINACK
             logger.info("Entered FIN_WAIT_2 state: received FINACK from client.")
         except timeout:
+            self.update_timeout_on_timeout()
             logger.info(
                 "Timeout occurred while waiting for FINACK. Waiting a bit longer..."
             )
@@ -212,6 +267,7 @@ class SimplexTCPServer:
                 break
 
             except timeout:
+                self.update_timeout_on_timeout()
                 logger.info(
                     "Timeout occurred while waiting for FIN. Waiting a bit longer..."
                 )
@@ -253,7 +309,8 @@ class SimplexTCPServer:
         try:
             ack, _ = self.socket.recvfrom(2048)
         except timeout:
-            pass
+            self.update_timeout_on_timeout()
+
         logger.info(f"Entering CLOSED state. Goodbye...")
         self.socket.close()
         sys.exit(0)
@@ -284,6 +341,7 @@ class SimplexTCPServer:
                 try:
                     segment, _ = self.socket.recvfrom(2048)
                 except timeout:
+                    self.update_timeout_on_timeout()
                     logger.warning(f"Timeout occurred receiving data. Retrying...")
                     continue
 
@@ -421,6 +479,7 @@ class SimplexTCPServer:
                     continue
                 break
             except timeout:
+                self.update_timeout_on_timeout()
                 logger.info(f"Timeout occurred while waiting for ACK. Retrying...")
                 continue
             except Exception as e:
@@ -485,7 +544,7 @@ class SimplexTCPServer:
                 )
                 break
             except timeout:
-                # TODO increase timeout acc. formula
+                self.update_timeout_on_timeout()
                 logger.info(
                     f"Timeout occurred while receiving SYN segment. Retrying..."
                 )
