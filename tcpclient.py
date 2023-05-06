@@ -9,6 +9,7 @@ from utils import (
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
+    TIME_WAIT,
 )
 import random
 import logging
@@ -42,7 +43,6 @@ class SimplexTCPClient:
         self, file, address_of_udpl, port_number_of_udpl, windowsize, ack_port_number
     ):
         self.file = file
-        # self.proxy_address = ("0.0.0.0", 4444) For testing
         self.proxy_address = (address_of_udpl, port_number_of_udpl)
         self.windowsize = windowsize
         self.ack_port_number = ack_port_number
@@ -53,7 +53,7 @@ class SimplexTCPClient:
 
         # Initialize TCP state variables. Typically, this is done in the
         # three-way handshake, but they are provided here for readability.
-        self.client_isn = 0
+        self.client_isn = -1
         self.socket.settimeout(INITIAL_TIMEOUT)
         self.server_isn = -1
         self.expected_ack_num = -1
@@ -135,9 +135,7 @@ class SimplexTCPClient:
             logger.info(f"Entered FIN_WAIT_1 state: sent FIN segment to server.")
 
             try:
-                fin_ack, _ = self.socket.recvfrom(
-                    2048
-                )  # do i change this to windowsize?
+                fin_ack, _ = self.socket.recvfrom(self.windowsize)
                 _, _, flags, _, _ = unpack_segment(fin_ack)
 
                 if not verify_checksum(fin_ack) or not are_flags_set(
@@ -175,7 +173,7 @@ class SimplexTCPClient:
         # a loop with a maximum number of retries like in _send_fin_and_wait_for_ack().
         while True:
             try:
-                fin_segment, _ = self.socket.recvfrom(2048)
+                fin_segment, _ = self.socket.recvfrom(self.windowsize)
 
                 # Verify this is a FIN segment.
                 _, _, flags, _, _ = unpack_segment(fin_segment)
@@ -239,7 +237,7 @@ class SimplexTCPClient:
 
             self.socket.sendto(fin_ack, self.proxy_address)
             try:
-                ack, _ = self.socket.recvfrom(2048)
+                ack, _ = self.socket.recvfrom(self.windowsize)
                 _, _, flags, _, _ = unpack_segment(ack)
 
                 if not verify_checksum(ack) or not are_flags_set(flags, {"ACK", "FIN"}):
@@ -309,7 +307,7 @@ class SimplexTCPClient:
                 else:
                     sent_new_payload = False
                     try:
-                        ack, _ = self.socket.recvfrom(2048)
+                        ack, _ = self.socket.recvfrom(self.windowsize)
                         _, ack_num, flags, _, _ = unpack_segment(ack)
                         if not verify_checksum(ack):
                             logger.error(f"Verification failed. Dropping packet...")
@@ -353,8 +351,9 @@ class SimplexTCPClient:
                             window[i] = (segment, num_retries)
 
                         # Otherwise, resend all the segments and increment their retry counts
+                        logger.info(f"Resending segments in window...")
                         for segment, num_retries in window:
-                            logger.info(
+                            logger.debug(
                                 f"resending segment with payload {segment[20:]}"
                             )
                             self.socket.sendto(segment, self.proxy_address)
@@ -394,7 +393,7 @@ class SimplexTCPClient:
             )
 
             try:
-                ack, server_address = self.socket.recvfrom(2048)
+                ack, _ = self.socket.recvfrom(self.windowsize)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(ack)
                 logger.info(
@@ -422,7 +421,7 @@ class SimplexTCPClient:
                 continue
             except Exception as e:
                 logger.warning(f"Exception occurred while finishing handshake: {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
         if retry_count >= MAX_RETRIES:
@@ -438,8 +437,7 @@ class SimplexTCPClient:
         for each segment sent.
         """
         self.client_isn = random.randint(0, 2**32 - 1)
-        # self.client_isn = 0
-        logger.info(f"Client ISN: {self.client_isn}")
+        logger.debug(f"Client ISN: {self.client_isn}")
 
         # Create SYN segment with no payload, SYN flag set, and random sequence number. We
         # set the ack number to 0 because we are not acknowledging any data from the server.
@@ -457,9 +455,7 @@ class SimplexTCPClient:
             logger.info(f"Entered SYN_SENT state: sent SYN segment to server")
 
             try:
-                # TODO: change buffer size
-
-                synack_segment, server_address = self.socket.recvfrom(2048)
+                synack_segment, _ = self.socket.recvfrom(self.windowsize)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(synack_segment)
                 logger.info(
@@ -501,7 +497,7 @@ class SimplexTCPClient:
 
         if retry_count >= MAX_RETRIES:
             logger.warning(f"Maximum number of retries reached. Aborting...")
-            self.send_fin()
+            sys.exit(0)
 
         return self.server_isn
 
@@ -512,12 +508,12 @@ class SimplexTCPClient:
         :param payload: payload to be sent to the server
         :param flags: set of flags to be set in the TCP header
         """
-        logger.info(
+        logger.debug(
             f"Sending segment with payload {payload}, flags {flags}, ack number {ack_num}, seq number {seq_num}"
         )
 
         # Create the segment without the checksum.
-        tcp_segment = SimplexTCPHeader(
+        tcp_header = SimplexTCPHeader(
             src_port=self.ack_port_number,
             dest_port=self.proxy_address[1],
             seq_num=seq_num,
@@ -527,20 +523,9 @@ class SimplexTCPClient:
         )
 
         # Attach the TCP header to payload.
-        tcp_header = tcp_segment.make_tcp_header(payload)
+        tcp_segment = tcp_header.make_tcp_segment(payload)
 
-        # TODO: naming is a bit confusing. tcp_header is actually the entire segment.
-        return tcp_header
-
-    def shutdown(self):
-        """
-        Close all open sockets and files.
-        """
-        self.socket.close()
-        # TODO close file, maybe instance variable for file?
-
-        logger.info(f"Shutting down client...")
-        return
+        return tcp_segment
 
     def run(self):
         """

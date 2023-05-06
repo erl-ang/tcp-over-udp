@@ -1,6 +1,5 @@
 import logging
 from typing import Set
-import sys
 import ipaddress
 import os
 import struct
@@ -62,7 +61,7 @@ class SimplexTCPHeader:
         - seq_num: Sequence number
         - ack_num: Acknowledgement number
         - recv_window: Receive window
-        - flags: Flags, a set of strings. Possible values are "ACK", "RST", "SYN", and "FIN".
+        - flags: Flags, a set of strings. Possible values are "ACK", "SYN", and "FIN".
         """
         # Source and destination port numbers are used for multiplexing
         # and demultiplexing.
@@ -84,8 +83,7 @@ class SimplexTCPHeader:
         # as they are used for ECN and indicating the presence of urgent
         # data.
         for flag in flags:
-            if flag not in {"ACK", "RST", "SYN", "FIN"}:
-                # TODO: test this
+            if flag not in {"ACK", "SYN", "FIN"}:
                 logger.warning(f"Invalid flag {flag} specified. Removing from flags.")
                 flags.remove(flag)
         self.flags = flags
@@ -99,21 +97,20 @@ class SimplexTCPHeader:
 
         return
 
-    def make_tcp_header(self, payload: bytes):
+    def make_tcp_segment(self, payload: bytes):
         """
-        Returns a bytearray representing the TCP header with the checksum.
+        Returns a bytearray representing the TCP header with the checksum
+        and the payload.
 
         Note that the checksum is computed over the entire segment, including
         the TCP header (with the checksum field set to 0) and the payload.
         """
-        # TODO: change naming to tcp_header
         tcp_segment = self._make_tcp_header_without_checksum()
         tcp_segment.extend(payload)
         tcp_segment[16:18] = calculate_checksum(tcp_segment)
         logger.debug(
             f"Putting checksum in header: {int.from_bytes(tcp_segment[16:18], byteorder='big')}"
         )
-
         return tcp_segment
 
     def _make_tcp_header_without_checksum(self):

@@ -47,8 +47,10 @@ class SimplexTCPServer:
         self.socket.settimeout(INITIAL_TIMEOUT)
         logger.info(f"Socket created and bound to port {self.listening_port}")
 
+        # The TCP variables will be initialized during the three-way handshake.
         self.client_isn = -1
-        self.server_isn = 0
+        self.server_isn = -1
+        self.windowsize = -1
         return
 
     def create_and_bind_socket(self):
@@ -68,24 +70,23 @@ class SimplexTCPServer:
         """
         # Create the segment without the checksum. Increment the ack number,
         # indicating that the server is expecting the ack_num + 1 byte next
-        logger.info(
+        logger.debug(
             f"Sending segment with ack number {ack_num}, seq number {seq_num}, and flags {flags}"
         )
 
-        tcp_segment = SimplexTCPHeader(
+        tcp_header = SimplexTCPHeader(
             src_port=self.listening_port,
             dest_port=self.client_address[1],
             seq_num=seq_num,
             ack_num=ack_num,
-            recv_window=10,  # TODO: change this
+            recv_window=self.windowsize,
             flags=flags,
         )
 
         # Attach the TCP header to payload.
-        tcp_header = tcp_segment.make_tcp_header(payload)
+        tcp_segment = tcp_header.make_tcp_segment(payload)
 
-        # TODO: change naming. This is actually the segment, not just the header.
-        return tcp_header
+        return tcp_segment
 
     def send_fin(self):
         """
@@ -131,9 +132,8 @@ class SimplexTCPServer:
         # then close the connection to avoid a half-open connection. On the client side, after
         # reaching all its retransmissions, the client will abort the procedure and
         # close the connection.
-        # TODO: change.
         try:
-            fin_ack, _ = self.socket.recvfrom(2048)
+            fin_ack, _ = self.socket.recvfrom(self.windowsize)
             _, _, flags, _, _ = unpack_segment(fin_ack)
 
             if not verify_checksum(fin_ack) or not are_flags_set(flags, {"ACK", "FIN"}):
@@ -176,7 +176,7 @@ class SimplexTCPServer:
         for _ in MAX_RETRIES:
             retry_count += 1
             try:
-                fin, _ = self.socket.recvfrom(2048)
+                fin, _ = self.socket.recvfrom(self.windowsize)
                 _, _, flags, _, _ = unpack_segment(fin)
 
                 if not verify_checksum(fin) or not are_flags_set(flags, {"FIN"}):
@@ -234,7 +234,7 @@ class SimplexTCPServer:
         # just ignore this. The diagram on pg 251 of K&R depicts the
         # server closing the connection directly after sending the FIN.
         try:
-            ack, _ = self.socket.recvfrom(2048)
+            ack, _ = self.socket.recvfrom(self.windowsize)
         except timeout:
             pass
         logger.info(f"Entering CLOSED state. Goodbye...")
@@ -265,14 +265,14 @@ class SimplexTCPServer:
         with open(file_name, "wb") as file:
             while last_byte_recvd < self.file_size:
                 try:
-                    segment, client_address = self.socket.recvfrom(2048)
+                    segment, _ = self.socket.recvfrom(self.windowsize)
                 except timeout:
                     logger.warning(f"Timeout occurred receiving data. Retrying...")
                     continue
 
                 # Received a segment! Note that this payload is padded, which will
                 # later be stripped by the verify_checksum function.
-                seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
+                seq_num, _, flags, _, payload = unpack_segment(segment)
                 logger.info(f"payload received: {payload}")
 
                 # If the packet is in order and uncorrupted, write the payload to the file
@@ -297,7 +297,7 @@ class SimplexTCPServer:
                     )
                     ack = self.create_tcp_segment(
                         payload=b"",
-                        seq_num=0,  # seq_num doesn't matter for ACKs
+                        seq_num=0,
                         ack_num=(next_seq_num - 1),
                         flags={"ACK"},
                     )
@@ -316,8 +316,6 @@ class SimplexTCPServer:
         2. Send SYNACK segment to client with random sequence number, SYN and ACK fields, and no payload.
         3. Receive ACK segment with payload containing the file size to be sent during
         the connection.
-
-        TODO clean up when allocating TCP state variables
         """
         logger.info(f"Waiting for SYN segment to establish connection...")
         self._listen_for_syn()
@@ -350,11 +348,9 @@ class SimplexTCPServer:
         """
         Keep sending TCP segments encapsulated in a UDP segment
         until we receive the ACK segment we are expecting.
-
-        TODO: probably have to check ACK number too
         """
-        # Create TCP segment. TODO: information on how the sequence number is incremented
-        # and ack number is set.
+        print(f"receive window size: {self.windowsize}")
+        # Create TCP segment.
         synack_segment = self.create_tcp_segment(
             payload=payload,
             seq_num=self.server_isn,
@@ -374,10 +370,10 @@ class SimplexTCPServer:
             self.socket.sendto(synack_segment, self.client_address)
 
             try:
-                segment, client_address = self.socket.recvfrom(2048)
+                segment, _ = self.socket.recvfrom(self.windowsize)
 
                 # Unpack the segment and extract the payload.
-                seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
+                seq_num, ack_num, flags, _, payload = unpack_segment(segment)
                 logger.info(
                     f"received segment with flags {flags}, ack number {ack_num}, seq number {seq_num}, and payload {payload}"
                 )
@@ -435,7 +431,7 @@ class SimplexTCPServer:
             retry_count += 1
 
             try:
-                syn_segment, client_address = self.socket.recvfrom(40)
+                syn_segment, _ = self.socket.recvfrom(MSS)
 
                 seq_num, _, flags, recv_window, _ = unpack_segment(syn_segment)
                 logger.info(
@@ -448,10 +444,6 @@ class SimplexTCPServer:
                 if not verify_checksum(segment=syn_segment):
                     logger.error("Checksum verification failed. Ignoring segment.")
                     continue
-                # TODO explain
-                if are_flags_set(flags, {"FIN"}):
-                    logger.info(f"Received FIN from client...")
-                    self.respond_to_fin()
 
                 # Determine whether the flags in the segment are what we expect.
                 # If not, ignore the segment.
@@ -460,7 +452,10 @@ class SimplexTCPServer:
                     continue
 
                 self.client_isn = seq_num
-                logger.info(f"SYN segment received with client ISN: {self.client_isn}")
+                self.windowsize = recv_window
+                logger.info(
+                    f"SYN segment received with client ISN: {self.client_isn}, window size: {self.windowsize}"
+                )
                 break
             except timeout:
                 # TODO increase timeout acc. formula
@@ -477,12 +472,12 @@ class SimplexTCPServer:
             logger.error(f"Maximum number of retries reached. Aborting...")
             sys.exit(0)
 
-        return self.client_isn
-
-    def shutdown_server(self):
-        pass
+        return
 
     def run(self):
+        """
+        Run the TCP server to receive the file from the server.
+        """
         self.establish_connection()
         self.receive_file_gbn()
         return
