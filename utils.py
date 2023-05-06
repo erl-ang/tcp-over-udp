@@ -32,6 +32,12 @@ MSS = 40
 MAX_RETRIES = 7
 INITIAL_TIMEOUT = 0.5
 
+# The program that wants to terminate the connection will wait TIME_WAIT seconds before closing the connection after receiving
+# a FIN from the other side.
+# Typical values are 30 seconds, 1 minute, and 2 minutes. I keep
+# at 5 seconds so I don't have to wait too long.
+TIME_WAIT = 5
+
 
 class SimplexTCPHeader:
     """

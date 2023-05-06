@@ -131,32 +131,35 @@ class SimplexTCPServer:
         # then close the connection to avoid a half-open connection. On the client side, after
         # reaching all its retransmissions, the client will abort the procedure and
         # close the connection.
-        retry_count = 0
-        for _ in MAX_RETRIES:
-            retry_count += 1
-            try:
-                fin_ack, _ = self.socket.recvfrom(2048)
-                _, _, flags, _, _ = unpack_segment(fin_ack)
+        # TODO: change.
+        try:
+            fin_ack, _ = self.socket.recvfrom(2048)
+            _, _, flags, _, _ = unpack_segment(fin_ack)
 
-                if not verify_checksum(fin_ack) or not are_flags_set(
-                    flags, {"ACK", "FIN"}
-                ):
-                    logger.error(f"Verification failed. Dropping packet...")
-                    continue
+            if not verify_checksum(fin_ack) or not are_flags_set(flags, {"ACK", "FIN"}):
+                logger.error(f"Verification failed. Dropping packet...")
 
-                # Successfully received FINACK
-                logger.info("Entered FIN_WAIT_2 state: received FINACK from client.")
-                break
-            except timeout:
-                logger.info(
-                    "Timeout occurred while waiting for FINACK. Waiting a bit longer..."
+            # Received FIN but not FINACK. This means that the client's FINACK was lost.
+            if are_flags_set(flags, {"FIN"}):
+                logger.info("Entered TIME_WAIT state: received FIN from client.")
+                ack_segment = self.create_tcp_segment(
+                    payload=b"",
+                    seq_num=0,
+                    ack_num=0,
+                    flags={"ACK", "FIN"},
                 )
+                self.socket.sendto(ack_segment, self.proxy_address)
+                time.sleep(TIME_WAIT)
+                logger.info(f"Goodbye....")
+                self.socket.close()
+                sys.exit(0)
 
-        if retry_count >= MAX_RETRIES:
+            # Successfully received FINACK
+            logger.info("Entered FIN_WAIT_2 state: received FINACK from client.")
+        except timeout:
             logger.info(
-                f"Waited too long for FINACK. Aborting to avoid half-open connections..."
+                "Timeout occurred while waiting for FINACK. Waiting a bit longer..."
             )
-            sys.exit(0)
 
         return
 
@@ -230,7 +233,10 @@ class SimplexTCPServer:
         # At this point the client sends an ACK, but the server can
         # just ignore this. The diagram on pg 251 of K&R depicts the
         # server closing the connection directly after sending the FIN.
-        ack, _ = self.socket.recvfrom(2048)
+        try:
+            ack, _ = self.socket.recvfrom(2048)
+        except timeout:
+            pass
         logger.info(f"Entering CLOSED state. Goodbye...")
         self.socket.close()
         sys.exit(0)
@@ -298,8 +304,9 @@ class SimplexTCPServer:
 
                 self.socket.sendto(ack, self.client_address)
 
-        logger.info(f"last payload: {payload}")
-        logger.info(f"File received. Closing connection...")
+        if last_byte_recvd >= self.file_size:
+            logger.info(f"File received. Closing connection...")
+            self.send_fin()
         return
 
     def establish_connection(self):
@@ -368,6 +375,7 @@ class SimplexTCPServer:
 
             try:
                 segment, client_address = self.socket.recvfrom(2048)
+
                 # Unpack the segment and extract the payload.
                 seq_num, ack_num, flags, recv_window, payload = unpack_segment(segment)
                 logger.info(
@@ -399,7 +407,6 @@ class SimplexTCPServer:
 
         if retry_count >= MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
-            # send_fin
             sys.exit(1)
 
         return payload
@@ -412,7 +419,8 @@ class SimplexTCPServer:
         randomly chosen ISN when a SYN segment is received.
 
         If the server does not receive a SYN segment, it will continue to listen,
-        with timeouts reset accordingly.
+        with timeouts reset accordingly. If it times out MAX_RETRIES times, it will
+        just abort as no connection was established in the first place.
         If the segment received does not have the SYN flag set, it is ignored.
         If the segment is corrupted (checksum verification fails), it is ignored.
         """
@@ -467,8 +475,7 @@ class SimplexTCPServer:
 
         if retry_count >= MAX_RETRIES:
             logger.error(f"Maximum number of retries reached. Aborting...")
-            sys.exit(1)
-            # self.send_fin()
+            sys.exit(0)
 
         return self.client_isn
 
@@ -484,7 +491,6 @@ class SimplexTCPServer:
 def main():
     """ """
     parser = argparse.ArgumentParser(description="Bootleg TCP implementation over UDP")
-    # TDOO: validate args
     parser.add_argument("file", type=str, help="file to send over TCP")
     parser.add_argument("listening_port", type=int, help="port to listen on")
     parser.add_argument("address_for_acks", type=str, help="address to send ACKs to")

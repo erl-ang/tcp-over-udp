@@ -34,12 +34,6 @@ fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
 
-# The client waits TIME_WAIT seconds before closing the connection after receiving
-# a FIN from the server.
-# Typical values are 30 seconds, 1 minute, and 2 minutes. I keep
-# at 5 seconds so I don't have to wait too long.
-TIME_WAIT = 5
-
 
 class SimplexTCPClient:
     """ """
@@ -212,6 +206,59 @@ class SimplexTCPClient:
                 continue
         return
 
+    def respond_to_fin(self):
+        """
+        Called when the client receives a FIN from the server.
+
+        The client will:
+        - Receive the FIN (invoking this function) and respond with an ACK --> enters CLOSE_WAIT state.
+        - Send its own FIN --> enters LAST_ACK state
+        - Receive an ACK and send nothing --> CLOSED state
+        """
+        fin_ack = self.create_tcp_segment(
+            payload=b"", seq_num=0, ack_num=0, flags={"FIN", "ACK"}
+        )
+
+        # This FINACK may get lost, but the client has no way of knowing if
+        # if gets lost because the server will only respond after the client
+        # sends another message: the last FIN.
+        # In both cases (where the FINACK gets dropped), we send the FIN.
+        # In the case it gets lost, the server will handle receiving the FIN
+        # but not the previous FINACK.
+        self.socket.sendto(fin_ack, self.proxy_address)
+        logger.info(f"Entered CLOSE_WAIT state: sent FINACK to server.")
+
+        # Although the textbook specifies that the non-initiator's side of the
+        # TCP connection should be closed after sending the last FIN, because the
+        # FIN segment could be dropped, we wait for an ACK from the server
+        # to ensure that the server has received the FIN segment.
+        fin = self.create_tcp_segment(payload=b"", seq_num=0, ack_num=0, flags={"FIN"})
+        retry_count = 0
+        for _ in range(MAX_RETRIES):
+            retry_count += 1
+
+            self.socket.sendto(fin_ack, self.proxy_address)
+            try:
+                ack, _ = self.socket.recvfrom(2048)
+                _, _, flags, _, _ = unpack_segment(ack)
+
+                if not verify_checksum(ack) or not are_flags_set(flags, {"ACK", "FIN"}):
+                    logger.error(f"Verification failed. Dropping packet...")
+                    continue
+            except timeout:
+                logger.info(
+                    f"Timeout occurred while waiting for FINACK. Retransmitting FIN segment..."
+                )
+
+        if retry_count >= MAX_RETRIES:
+            logger.info(
+                f"Waited too long for FINACK. Aborting to avoid half-open connections..."
+            )
+
+        # Receive a FINACK from the server or the FIN segment has hit its retransmission limit. Either way, we can exit.
+        logger.info(f"Goodbye...")
+        sys.exit(0)
+
     def send_file_gbn(self):
         """
         Go-Back-N sender.
@@ -264,7 +311,10 @@ class SimplexTCPClient:
                     try:
                         ack, _ = self.socket.recvfrom(2048)
                         _, ack_num, flags, _, _ = unpack_segment(ack)
-                        if ack_num >= send_base:
+                        if not verify_checksum(ack):
+                            logger.error(f"Verification failed. Dropping packet...")
+                            continue
+                        if ack_num >= send_base and are_flags_set(flags, {"ACK"}):
                             logger.info(
                                 f"Received ACK {ack_num}. Moving window forward to [{ack_num + 1}, {next_seq_num - 1}]"
                             )
@@ -273,6 +323,11 @@ class SimplexTCPClient:
                             )
                             window.pop(0)
                             send_base = ack_num + 1
+                        elif are_flags_set(flags, {"FIN"}):
+                            logger.info(
+                                "Received FIN from server. Closing connection..."
+                            )
+                            self.respond_to_fin()
                         else:
                             logger.info(
                                 f"Received duplicate ACK with ack_num {ack_num}. Expecting ack_num {send_base}."
@@ -488,12 +543,11 @@ class SimplexTCPClient:
         return
 
     def run(self):
+        """
+        Run the TCP client to send the file to the server.
+        """
         self.establish_connection()
         self.send_file_gbn()
-
-        # After the client is finished sending the file, it sends a FIN segment to the server.
-        # it will keep sending the FIN segment until it receives an ACK.
-        # self.send_fin()
         return
 
 
