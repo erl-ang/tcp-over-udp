@@ -111,6 +111,7 @@ class SimplexTCPServer:
         # Wait for TIME_WAIT seconds before closing the connection.
         time.sleep(TIME_WAIT)
         self.socket.close()
+        logger.info(f"Goodbye....")
         sys.exit(0)
 
     def _send_fin_and_wait_for_finack(self):
@@ -133,7 +134,7 @@ class SimplexTCPServer:
         # reaching all its retransmissions, the client will abort the procedure and
         # close the connection.
         try:
-            fin_ack, _ = self.socket.recvfrom(self.windowsize)
+            fin_ack, _ = self.socket.recvfrom(2048)
             _, _, flags, _, _ = unpack_segment(fin_ack)
 
             if not verify_checksum(fin_ack) or not are_flags_set(flags, {"ACK", "FIN"}):
@@ -148,7 +149,7 @@ class SimplexTCPServer:
                     ack_num=0,
                     flags={"ACK", "FIN"},
                 )
-                self.socket.sendto(ack_segment, self.proxy_address)
+                self.socket.sendto(ack_segment, self.client_address)
                 time.sleep(TIME_WAIT)
                 logger.info(f"Goodbye....")
                 self.socket.close()
@@ -173,10 +174,10 @@ class SimplexTCPServer:
         # connection. On the client side, after reaching all its retransmissions, the
         # client will abort the procedure and close the connection.
         retry_count = 0
-        for _ in MAX_RETRIES:
+        for _ in range(MAX_RETRIES):
             retry_count += 1
             try:
-                fin, _ = self.socket.recvfrom(self.windowsize)
+                fin, _ = self.socket.recvfrom(2048)
                 _, _, flags, _, _ = unpack_segment(fin)
 
                 if not verify_checksum(fin) or not are_flags_set(flags, {"FIN"}):
@@ -191,7 +192,7 @@ class SimplexTCPServer:
                     ack_num=0,
                     flags={"ACK", "FIN"},
                 )
-                self.socket.sendto(ack_segment, self.proxy_address)
+                self.socket.sendto(ack_segment, self.client_address)
                 break
 
             except timeout:
@@ -234,7 +235,7 @@ class SimplexTCPServer:
         # just ignore this. The diagram on pg 251 of K&R depicts the
         # server closing the connection directly after sending the FIN.
         try:
-            ack, _ = self.socket.recvfrom(self.windowsize)
+            ack, _ = self.socket.recvfrom(2048)
         except timeout:
             pass
         logger.info(f"Entering CLOSED state. Goodbye...")
@@ -265,7 +266,7 @@ class SimplexTCPServer:
         with open(file_name, "wb") as file:
             while last_byte_recvd < self.file_size:
                 try:
-                    segment, _ = self.socket.recvfrom(self.windowsize)
+                    segment, _ = self.socket.recvfrom(2048)
                 except timeout:
                     logger.warning(f"Timeout occurred receiving data. Retrying...")
                     continue
@@ -369,7 +370,7 @@ class SimplexTCPServer:
             self.socket.sendto(synack_segment, self.client_address)
 
             try:
-                segment, _ = self.socket.recvfrom(self.windowsize)
+                segment, _ = self.socket.recvfrom(2048)
 
                 # Unpack the segment and extract the payload.
                 seq_num, ack_num, flags, _, payload = unpack_segment(segment)

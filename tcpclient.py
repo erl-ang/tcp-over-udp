@@ -9,6 +9,8 @@ from utils import (
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
+    ALPHA,
+    BETA,
     TIME_WAIT,
 )
 import random
@@ -87,6 +89,32 @@ class SimplexTCPClient:
         self._send_ack_with_filesize()
         logger.info(f"====================== ESTABLISHED! ==========================")
         return
+
+    def update_timeout(self, sample_rtt: int, is_first_rtt: bool):
+        """
+        Updates socket timeout values based on the formulas from RFC 6298.
+
+        TimeoutInterval = EstimatedRTT + 4 * DevRTT, where EstimatedRTT
+        is a measure of the average SampleRTT and DevRTT is a measure of the
+        variability of the SampleRTT. Both are weighted averages whose weights
+        can be adjusted in the headers.
+
+        EstimatedRTT = BETA * EstimatedRTT + (1 - BETA) * SampleRTT
+        DevRTT = (1 - ALPHA) * DevRTT + ALPHA * |SampleRTT - EstimatedRTT|
+        """
+        # Upon the receipt of the first valid ACK, the estimated and dev RTTs
+        # need to be initialized as follows:
+        if is_first_rtt:
+            self.estimated_rtt = sample_rtt
+            self.dev_rtt = sample_rtt / 2
+
+        # Set timeout interval according to RFC 6298.
+        self.estimated_rtt = BETA * self.estimated_rtt + (1 - BETA) * sample_rtt
+        self.dev_rtt = (1 - ALPHA) * self.dev_rtt + ALPHA * abs(
+            sample_rtt - self.estimated_rtt
+        )
+        timeout_interval = self.estimated_rtt + (4 * self.dev_rtt)
+        return timeout_interval
 
     def send_fin(self):
         """
@@ -305,7 +333,7 @@ class SimplexTCPClient:
                 else:
                     sent_new_payload = False
                     try:
-                        ack, _ = self.socket.recvfrom(self.windowsize)
+                        ack, _ = self.socket.recvfrom(2048)
                         _, ack_num, flags, _, _ = unpack_segment(ack)
                         if not verify_checksum(ack):
                             logger.error(f"Verification failed. Dropping packet...")
@@ -338,6 +366,7 @@ class SimplexTCPClient:
                                     f"Received 3 duplicate ACKs. Resending segment with seq_num {send_base}"
                                 )
                                 segment, num_retries = window[0]
+                                window[0] = (segment, 0)
                                 self.socket.sendto(segment, self.proxy_address)
                                 num_dup_acks = 0
 
@@ -400,7 +429,7 @@ class SimplexTCPClient:
             )
 
             try:
-                ack, _ = self.socket.recvfrom(self.windowsize)
+                ack, _ = self.socket.recvfrom(2048)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(ack)
                 logger.info(
@@ -462,7 +491,7 @@ class SimplexTCPClient:
             logger.info(f"Entered SYN_SENT state: sent SYN segment to server")
 
             try:
-                synack_segment, _ = self.socket.recvfrom(self.windowsize)
+                synack_segment, _ = self.socket.recvfrom(2048)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(synack_segment)
                 logger.info(
