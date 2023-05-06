@@ -289,10 +289,7 @@ class SimplexTCPClient:
 
                 # Fill the window with segments until it is full and send all segments.
                 if next_seq_num < send_base + (self.windowsize // MSS):
-                    logger.info(
-                        f"Condition 1: {next_seq_num} < {send_base} + {self.windowsize // MSS}"
-                    )
-                    # Send the next segment
+
                     segment = self.create_tcp_segment(
                         payload=payload,
                         seq_num=next_seq_num,
@@ -313,10 +310,10 @@ class SimplexTCPClient:
                             logger.error(f"Verification failed. Dropping packet...")
                             continue
                         if ack_num >= send_base and are_flags_set(flags, {"ACK"}):
-                            logger.info(
+                            logger.debug(
                                 f"Received ACK {ack_num}. Moving window forward to [{ack_num + 1}, {next_seq_num - 1}]"
                             )
-                            logger.info(
+                            logger.debug(
                                 f"removing segment with payload {window[0][0][20:]}"
                             )
                             window.pop(0)
@@ -333,10 +330,6 @@ class SimplexTCPClient:
                     except timeout:
                         # If the timer expires, then resend all segments in the window and increment
                         # their retry count.
-                        logger.warning(
-                            f"Timeout expired. Resending all segments in window [send_base, nextseqnum -1]: [{send_base}, {next_seq_num - 1}]..."
-                        )
-
                         # If the segment hit the retransmission limit for a packet, then terminate
                         # the connection.
                         for i in range(len(window)):
@@ -351,7 +344,7 @@ class SimplexTCPClient:
                             window[i] = (segment, num_retries)
 
                         # Otherwise, resend all the segments and increment their retry counts
-                        logger.info(f"Resending segments in window...")
+                        logger.info(f"Timer expired. Resending segments in window...")
                         for segment, num_retries in window:
                             logger.debug(
                                 f"resending segment with payload {segment[20:]}"

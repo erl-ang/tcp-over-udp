@@ -273,7 +273,6 @@ class SimplexTCPServer:
                 # Received a segment! Note that this payload is padded, which will
                 # later be stripped by the verify_checksum function.
                 seq_num, _, flags, _, payload = unpack_segment(segment)
-                logger.info(f"payload received: {payload}")
 
                 # If the packet is in order and uncorrupted, write the payload to the file
                 # increment nextseqnum, send ACK saying nextseqnum was received. If the packet
@@ -293,7 +292,7 @@ class SimplexTCPServer:
                     self.respond_to_fin()
                 else:
                     logger.warning(
-                        f"Received corrupted or out of order segment with seq num {seq_num} and payload {payload} \n Sending dup ACK for seq num {next_seq_num - 1}"
+                        f"Received corrupted or out of order segment with seq num {seq_num}. Sending dup ACK for seq num {next_seq_num - 1}"
                     )
                     ack = self.create_tcp_segment(
                         payload=b"",
