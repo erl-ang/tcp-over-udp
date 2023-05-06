@@ -6,11 +6,10 @@ from utils import (
     are_flags_set,
     validate_args,
     unpack_segment,
+    update_timeout,
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
-    ALPHA,
-    BETA,
     TIME_WAIT,
 )
 import random
@@ -39,11 +38,24 @@ logger.addHandler(fh)
 
 
 class SimplexTCPClient:
-    """ """
+    """
+    Implements a Simple TCP client that sends a file to a server using
+    UDP sockets over a unreliable channel.
+    """
 
     def __init__(
         self, file, address_of_udpl, port_number_of_udpl, windowsize, ack_port_number
     ):
+        """
+        Instance variables:
+        - file: the file to be transferred
+        - proxy_address: the address of the proxy (address, port)
+        - windowsize: the size of the sliding window for pipelining segments
+        - ack_port_number: the port number to which the client will listen for ACKs
+        - socket: the UDP socket used to send and receive segments
+        - client_isn: the client's initial sequence number
+        - server_isn: the server's initial sequence number
+        """
         self.file = file
         self.proxy_address = (address_of_udpl, port_number_of_udpl)
         self.windowsize = windowsize
@@ -58,7 +70,6 @@ class SimplexTCPClient:
         self.client_isn = -1
         self.socket.settimeout(INITIAL_TIMEOUT)
         self.server_isn = -1
-        self.expected_ack_num = -1
 
     def create_and_bind_socket(self):
         """
@@ -89,32 +100,6 @@ class SimplexTCPClient:
         self._send_ack_with_filesize()
         logger.info(f"====================== ESTABLISHED! ==========================")
         return
-
-    def update_timeout(self, sample_rtt: int, is_first_rtt: bool):
-        """
-        Updates socket timeout values based on the formulas from RFC 6298.
-
-        TimeoutInterval = EstimatedRTT + 4 * DevRTT, where EstimatedRTT
-        is a measure of the average SampleRTT and DevRTT is a measure of the
-        variability of the SampleRTT. Both are weighted averages whose weights
-        can be adjusted in the headers.
-
-        EstimatedRTT = BETA * EstimatedRTT + (1 - BETA) * SampleRTT
-        DevRTT = (1 - ALPHA) * DevRTT + ALPHA * |SampleRTT - EstimatedRTT|
-        """
-        # Upon the receipt of the first valid ACK, the estimated and dev RTTs
-        # need to be initialized as follows:
-        if is_first_rtt:
-            self.estimated_rtt = sample_rtt
-            self.dev_rtt = sample_rtt / 2
-
-        # Set timeout interval according to RFC 6298.
-        self.estimated_rtt = BETA * self.estimated_rtt + (1 - BETA) * sample_rtt
-        self.dev_rtt = (1 - ALPHA) * self.dev_rtt + ALPHA * abs(
-            sample_rtt - self.estimated_rtt
-        )
-        timeout_interval = self.estimated_rtt + (4 * self.dev_rtt)
-        return timeout_interval
 
     def send_fin(self):
         """

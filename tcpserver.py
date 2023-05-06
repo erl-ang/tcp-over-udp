@@ -6,6 +6,7 @@ from utils import (
     are_flags_set,
     validate_args,
     unpack_segment,
+    update_timeout,
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
@@ -36,9 +37,22 @@ logger.addHandler(fh)
 
 
 class SimplexTCPServer:
-    """ """
+    """
+    Implements a Simple TCP server that receives a file from a client
+    over UDP sockets over a unreliable channel.
+    """
 
     def __init__(self, file, listening_port, address_for_acks, port_for_acks):
+        """
+        Instance variables:
+        - file: file to be sent to the client
+        - listening_port: port on which the server listens for incoming connections
+        - client_address: address of the client to which the server sends ACKs
+        - socket: UDP socket used to send and receive data
+        - client_isn: initial sequence number of the client
+        - server_isn: initial sequence number of the server
+        - windowsize: size of the sliding window for pipelining segments
+        """
         self.file = file
         self.listening_port = listening_port
         self.client_address = (address_for_acks, port_for_acks)
