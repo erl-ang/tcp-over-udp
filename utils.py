@@ -4,13 +4,14 @@ import ipaddress
 import os
 import struct
 
+LOGGING_LEVEL = logging.INFO
 logger = logging.getLogger("UTILS    ")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGGING_LEVEL)
 
 # To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(LOGGING_LEVEL)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
@@ -24,12 +25,20 @@ FIN_MASK = 0b00000010
 
 # Maximum segment size (MSS) is the maximum amount of data that can be carried in a single
 # TCP segment. The MSS is specified during the initial connection setup.
-MSS = 40
+MSS = 576
 
 # Implementations of TCP usually have a maximum number of retransmissions for a segment.
-# 5-7 is a common valid.
+# 5-7 is a common value.
 MAX_RETRIES = 7
-INITIAL_TIMEOUT = 0.5
+
+# Retransmission and timeout constants:
+# Per RFC 6298, the initial retransmission timeout is set to 1 second.
+INITIAL_TIMEOUT = 1
+ALPHA = 0.125  # weight for the EWMA of SampleRTT values
+BETA = 0.25  # weight for the EWMA of | EstimatedRTT - SampleRTT | values, "variability"
+TIMEOUT_MULTIPLIER = (
+    1.3  # used to increase the timeout after each retransmission, traditinoally 2
+)
 
 # The program that wants to terminate the connection will wait TIME_WAIT seconds before closing the connection after receiving
 # a FIN from the other side.
@@ -256,7 +265,7 @@ def validate_args(args, is_client=False):
     if is_client:
         if args.windowsize % MSS != 0:
             logger.error(
-                f"Invalid window size {args.windowsize}. Window size should be a multiple of 40 bytes, the MSS"
+                f"Invalid window size {args.windowsize}. Window size should be a multiple of {MSS} bytes, the MSS"
             )
             return False
     return True

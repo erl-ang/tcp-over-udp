@@ -6,10 +6,14 @@ from utils import (
     are_flags_set,
     validate_args,
     unpack_segment,
+    BETA,
+    ALPHA,
+    LOGGING_LEVEL,
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
     TIME_WAIT,
+    TIMEOUT_MULTIPLIER,
 )
 import random
 import logging
@@ -19,29 +23,43 @@ import traceback
 import time
 
 logger = logging.getLogger("TCPClient")
-logger.setLevel(logging.INFO)
+# We can set the level to logging.INFO for less verbose logging.
+logger.setLevel(LOGGING_LEVEL)
 
 # To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(LOGGING_LEVEL)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 # Do the same to log to a file.
 fh = logging.FileHandler("tcpclient.log", mode="w")
-fh.setLevel(logging.INFO)
+fh.setLevel(LOGGING_LEVEL)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
 
 
 class SimplexTCPClient:
-    """ """
+    """
+    Implements a Simple TCP client that sends a file to a server using
+    UDP sockets over a unreliable channel.
+    """
 
     def __init__(
         self, file, address_of_udpl, port_number_of_udpl, windowsize, ack_port_number
     ):
+        """
+        Instance variables:
+        - file: the file to be transferred
+        - proxy_address: the address of the proxy (address, port)
+        - windowsize: the size of the sliding window for pipelining segments
+        - ack_port_number: the port number to which the client will listen for ACKs
+        - socket: the UDP socket used to send and receive segments
+        - client_isn: the client's initial sequence number
+        - server_isn: the server's initial sequence number
+        """
         self.file = file
         self.proxy_address = (address_of_udpl, port_number_of_udpl)
         self.windowsize = windowsize
@@ -56,7 +74,10 @@ class SimplexTCPClient:
         self.client_isn = -1
         self.socket.settimeout(INITIAL_TIMEOUT)
         self.server_isn = -1
-        self.expected_ack_num = -1
+
+        # These will be initialized to their real (estimated) values after the receipt of a valid (non-retransmitted) ACK.
+        self.estimated_rtt = -1
+        self.dev_rtt = -1
 
     def create_and_bind_socket(self):
         """
@@ -65,6 +86,54 @@ class SimplexTCPClient:
         self.socket = socket(AF_INET, SOCK_DGRAM)
         self.socket.bind(("", self.ack_port_number))
         return self.socket
+
+    def update_timeout_on_rtt(self, sample_rtt: float):
+        """
+        Updates socket timeout values based on the formulas from RFC 6298.
+
+        TimeoutInterval = EstimatedRTT + 4 * DevRTT, where EstimatedRTT
+        is a measure of the average SampleRTT and DevRTT is a measure of the
+        variability of the SampleRTT. Both are weighted averages whose weights
+        can be adjusted in the headers.
+
+        EstimatedRTT = BETA * EstimatedRTT + (1 - BETA) * SampleRTT
+        DevRTT = (1 - ALPHA) * DevRTT + ALPHA * |SampleRTT - EstimatedRTT|
+        """
+        # Upon the receipt of the first valid ACK, the estimated and dev RTTs
+        # need to be initialized as follows. Note that we check if the values
+        # are less than 0 because the values are initialized to -1 in both
+        # the client and server.
+        if self.estimated_rtt < 0 and self.dev_rtt < 0:
+            self.estimated_rtt = sample_rtt
+            self.dev_rtt = sample_rtt / 2
+
+        # Set timeout interval according to RFC 6298.
+        self.estimated_rtt = BETA * self.estimated_rtt + (1 - BETA) * sample_rtt
+        self.dev_rtt = (1 - ALPHA) * self.dev_rtt + ALPHA * abs(
+            sample_rtt - self.estimated_rtt
+        )
+        timeout_interval = self.estimated_rtt + (4 * self.dev_rtt)
+        self.socket.settimeout(timeout_interval)
+        logger.info(
+            f"New SampleRTT: Updated timeout interval to {timeout_interval} seconds"
+        )
+        return
+
+    def update_timeout_on_timeout(self):
+        """
+        Updates socket timeout values by TIMEOUT_MULTIPLIER when a timeout occurs.
+
+        Traditionally, this multiplier set to twice the timeout interval, but we
+        allow flexibility to tweak this to evaluate performance. Greater
+        timeout intervals mean that lost packets will not be retransmitted quickly,
+        but shorter timeout intervals mean that there might be unnecessary retransmissions.
+        """
+        timeout_interval = self.socket.gettimeout()
+        self.socket.settimeout(timeout_interval * TIMEOUT_MULTIPLIER)
+        logger.info(
+            f"Timed out: updated timeout interval to {timeout_interval * TIMEOUT_MULTIPLIER} seconds"
+        )
+        return
 
     def establish_connection(self):
         """
@@ -98,7 +167,7 @@ class SimplexTCPClient:
         - Wait for an ACK from the server.
         - Wait for the server to send its own FIN segment and send an ACK.
         - Wait for TIME_WAIT seconds
-        - Send an ACK to the server before closing the connection.
+        - Closing the connection.
         """
         # Send a FIN segment to the server
         self._send_fin_and_wait_for_ack()
@@ -147,17 +216,18 @@ class SimplexTCPClient:
                 logger.info(f"Entered FIN_WAIT_2 state: received ACK from server.")
                 break
             except timeout:
+                self.update_timeout_on_timeout()
                 logger.info(
                     f"Timeout occurred while waiting for FINACK. Retransmitting FIN segment..."
                 )
                 continue
             except Exception as e:
                 logger.warning(f"Exception occurred while terminating connection {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
         if retry_count >= MAX_RETRIES:
-            logger.error(
+            logger.warning(
                 f"Maximum number of retries reached while sending FIN. Aborting..."
             )
             exit(0)
@@ -198,6 +268,7 @@ class SimplexTCPClient:
                 self.socket.sendto(ack_segment, self.proxy_address)
                 break
             except timeout:
+                self.update_timeout_on_timeout()
                 logger.error(
                     f"Timeout occurred while waiting for FIN. Waiting longer..."
                 )
@@ -235,7 +306,7 @@ class SimplexTCPClient:
         for _ in range(MAX_RETRIES):
             retry_count += 1
 
-            self.socket.sendto(fin_ack, self.proxy_address)
+            self.socket.sendto(fin, self.proxy_address)
             try:
                 ack, _ = self.socket.recvfrom(self.windowsize)
                 _, _, flags, _, _ = unpack_segment(ack)
@@ -244,6 +315,7 @@ class SimplexTCPClient:
                     logger.error(f"Verification failed. Dropping packet...")
                     continue
             except timeout:
+                self.update_timeout_on_timeout()
                 logger.info(
                     f"Timeout occurred while waiting for FINACK. Retransmitting FIN segment..."
                 )
@@ -259,7 +331,7 @@ class SimplexTCPClient:
 
     def send_file_gbn(self):
         """
-        Go-Back-N sender.
+        Go-Back-N implementation of sending a file to the server.
         """
         # Send base denotes the sequence number of the oldest unacknowledged segment.
         # This is initialized to TODO
@@ -273,6 +345,13 @@ class SimplexTCPClient:
         num_dup_acks = 0
         window = []
 
+        # Variables for measuring SampleRTT to readjust the timeout interval.
+        # We keep track of measuring_rtt to only measure once per round trip (once per window),
+        # seq_num_rtt so we can check if it has been retransmitted (to cancel the rtt calculation)
+        # and to stop the timer correctly, and start for the start of the timer so (end-start) = SampleRTT
+        measuring_rtt = False
+        seq_num_rtt = -1
+        start = -1
         logger.info(f"Sending file {self.file} to server...")
         with open(self.file, "rb") as file:
 
@@ -290,10 +369,6 @@ class SimplexTCPClient:
 
                 # Fill the window with segments until it is full and send all segments.
                 if next_seq_num < send_base + (self.windowsize // MSS):
-                    logger.info(
-                        f"Condition 1: {next_seq_num} < {send_base} + {self.windowsize // MSS}"
-                    )
-                    # Send the next segment
                     segment = self.create_tcp_segment(
                         payload=payload,
                         seq_num=next_seq_num,
@@ -301,27 +376,72 @@ class SimplexTCPClient:
                         flags=set(),
                     )
 
+                    # We also have to measure SampleRTTs while pipelining. Only compute the
+                    # sample RTT for one of the segments in the window and cancel the
+                    # timer if it needs to be retransmitted.
+                    if measuring_rtt == False:
+                        measuring_rtt = True
+                        seq_num_rtt = next_seq_num
+                        start = time.time()
+
                     self.socket.sendto(segment, self.proxy_address)
                     sent_new_payload = True
                     window.append((segment, 0))
                     next_seq_num += 1
-                else:
+
+                else:  # Window is full.
                     sent_new_payload = False
                     try:
-                        ack, _ = self.socket.recvfrom(self.windowsize)
+                        ack, _ = self.socket.recvfrom(2048)
                         _, ack_num, flags, _, _ = unpack_segment(ack)
                         if not verify_checksum(ack):
                             logger.error(f"Verification failed. Dropping packet...")
                             continue
+                        # Received an ACK for a segment in the window. If we are measuring the
+                        # SampleRTT, check if the ACK is for the segment we are measuring and
+                        # that it has not been retransmitted. If so, cancel the timer and
                         if ack_num >= send_base and are_flags_set(flags, {"ACK"}):
-                            logger.info(
+                            logger.debug(
+                                f"Received ACK {ack_num}, measuring_rtt is {measuring_rtt}, seq_num_rtt is {seq_num_rtt}, window[0][1] is {window[0][1]}"
+                            )
+                            if (
+                                measuring_rtt
+                                and seq_num_rtt == ack_num
+                                and window[0][1] == 0
+                            ):
+                                measuring_rtt = False
+                                end = time.time()
+                                sample_rtt = end - start
+                                logger.debug(
+                                    f"Received ACK {ack_num}. SampleRTT measured: {sample_rtt} seconds."
+                                )
+                                self.update_timeout_on_rtt(sample_rtt)
+                                seq_num_rtt = -1
+                                start = -1
+                            # If it has been retransmitted, cancel the timer. We just won't have
+                            # an accurate SampleRTT for this round trip.
+                            elif (
+                                measuring_rtt
+                                and seq_num_rtt == ack_num
+                                and window[0][1] > 0
+                            ):
+                                measuring_rtt = False
+                                seq_num_rtt = -1
+                                start = -1
+                                logger.debug(
+                                    f"Received ACK {ack_num}. SampleRTT not measured because segment was retransmitted."
+                                )
+
+                            # Either way, we got a valid ACK for a segment in our window so we can move the window forward.
+                            logger.debug(
                                 f"Received ACK {ack_num}. Moving window forward to [{ack_num + 1}, {next_seq_num - 1}]"
                             )
-                            logger.info(
+                            logger.debug(
                                 f"removing segment with payload {window[0][0][20:]}"
                             )
                             window.pop(0)
                             send_base = ack_num + 1
+
                         elif are_flags_set(flags, {"FIN"}):
                             logger.info(
                                 "Received FIN from server. Closing connection..."
@@ -341,16 +461,14 @@ class SimplexTCPClient:
                                     f"Received 3 duplicate ACKs. Resending segment with seq_num {send_base}"
                                 )
                                 segment, num_retries = window[0]
+                                window[0] = (segment, 0)
                                 self.socket.sendto(segment, self.proxy_address)
                                 num_dup_acks = 0
 
                     except timeout:
+                        self.update_timeout_on_timeout()
                         # If the timer expires, then resend all segments in the window and increment
                         # their retry count.
-                        logger.warning(
-                            f"Timeout expired. Resending all segments in window [send_base, nextseqnum -1]: [{send_base}, {next_seq_num - 1}]..."
-                        )
-
                         # If the segment hit the retransmission limit for a packet, then terminate
                         # the connection.
                         for i in range(len(window)):
@@ -365,7 +483,7 @@ class SimplexTCPClient:
                             window[i] = (segment, num_retries)
 
                         # Otherwise, resend all the segments and increment their retry counts
-                        logger.info(f"Resending segments in window...")
+                        logger.info(f"Timer expired. Resending segments in window...")
                         for segment, num_retries in window:
                             logger.debug(
                                 f"resending segment with payload {segment[20:]}"
@@ -401,13 +519,16 @@ class SimplexTCPClient:
 
         for _ in range(MAX_RETRIES):
             retry_count += 1
+
+            # Try measuring a sample RTT.
+            start = time.time()
             self.socket.sendto(segment, self.proxy_address)
             logger.info(
                 f"Entered CONNECTION ESTABLISHED state: sent ACK with file size"
             )
 
             try:
-                ack, _ = self.socket.recvfrom(self.windowsize)
+                ack, _ = self.socket.recvfrom(2048)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(ack)
                 logger.info(
@@ -428,9 +549,13 @@ class SimplexTCPClient:
                     )
                     continue
 
+                # Only update the timeout value if we have a valid sample RTT.
+                if retry_count == 1:
+                    sample_rtt = time.time() - start
+                    self.update_timeout_on_rtt(sample_rtt)
                 break
             except timeout:
-                # TODO: increase timeout acc. to formula in book.
+                self.update_timeout_on_timeout()
                 logger.info(f"Timeout occurred while finishing handshake.")
                 continue
             except Exception as e:
@@ -439,7 +564,7 @@ class SimplexTCPClient:
                 continue
 
         if retry_count >= MAX_RETRIES:
-            logger.error(f"Maximum number of retries reached...")
+            logger.warning(f"Maximum number of retries reached...")
             self.send_fin()
 
         return
@@ -465,11 +590,13 @@ class SimplexTCPClient:
 
         for _ in range(MAX_RETRIES):
             retry_count += 1
+
+            start = time.time()
             self.socket.sendto(syn_segment, self.proxy_address)
             logger.info(f"Entered SYN_SENT state: sent SYN segment to server")
 
             try:
-                synack_segment, _ = self.socket.recvfrom(self.windowsize)
+                synack_segment, _ = self.socket.recvfrom(2048)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(synack_segment)
                 logger.info(
@@ -494,19 +621,25 @@ class SimplexTCPClient:
 
                 # Stash the server's ISN for future use. This will be used to ACK the server's segments.
                 self.server_isn = seq_num
+
+                # Only use the SampleRTT measured if it is not a retransmission.
+                if retry_count == 1:
+                    sample_rtt = time.time() - start
+                    self.update_timeout_on_rtt(sample_rtt)
+
                 logger.info(
                     f"Received SYNACK segment from server with server ISN: {self.server_isn}"
                 )
                 break
             except timeout:
-                # TODO: increase timeout acc. to formula in book.
+                self.update_timeout_on_timeout()
                 logger.info(f"Timeout occurred while receiving SYNACK segment")
                 continue
             except Exception as e:
                 logger.warning(
                     f"Exception occurred while receiving SYNACK segment: {e}"
                 )
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
         if retry_count >= MAX_RETRIES:
