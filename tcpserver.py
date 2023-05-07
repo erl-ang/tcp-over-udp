@@ -40,12 +40,12 @@ fh.setFormatter(formatter)
 logger.addHandler(fh)
 
 
-# Because the server doesn't measure SampleRTTs as often as the client,
-# we choose to make the TIMEOUT_MULTIPLIER smaller so the server can
-# send duplicate ACKs more often to signal a packet loss. This will
-# allow the client to detect the packet loss via the triple duplicate
-# ack and initiate a fast retransmit.
-TIMEOUT_MULTIPLIER = 1.1
+# # Because the server doesn't measure SampleRTTs as often as the client,
+# # we choose to make the TIMEOUT_MULTIPLIER smaller so the server can
+# # send duplicate ACKs more often to signal a packet loss. This will
+# # allow the client to detect the packet loss via the triple duplicate
+# # ack and initiate a fast retransmit.
+# TIMEOUT_MULTIPLIER = 1.1
 
 
 class SimplexTCPServer:
@@ -204,7 +204,9 @@ class SimplexTCPServer:
             flags={"FIN"},
         )
         self.socket.sendto(fin_segment, self.client_address)
-        logger.info("Entered FIN_WAIT_1 state: sent FIN to client.")
+        logger.info(
+            "Entered FIN_WAIT_1 state: sent FIN to client and waiting for FINACK..."
+        )
 
         # Wait for the client to send an ACK. There is a chance that the client's ACK
         # (and all its retransmissions) will be lost and the server will never receive
@@ -218,12 +220,14 @@ class SimplexTCPServer:
 
             if not verify_checksum(fin_ack) or not are_flags_set(flags, {"ACK", "FIN"}):
                 logger.error(
-                    f"Verification failed. Dropping packet... with flags {flags}, seq_num {seq_num}, ack_num {ack_num}, payload {payload}"
+                    f"Verification failed. Dropping packet with flags {flags}. Checking if it's a FIN..."
                 )
 
             # Received FIN but not FINACK. This means that the client's FINACK was lost.
-            if are_flags_set(flags, {"FIN"}):
-                logger.info("Entered TIME_WAIT state: received FIN from client.")
+            if are_flags_set(flags, {"FIN"}) and not are_flags_set(flags, {"ACK"}):
+                logger.info(
+                    "Entered TIME_WAIT state: received FIN from client. Sending FINACK..."
+                )
                 ack_segment = self.create_tcp_segment(
                     payload=b"",
                     seq_num=0,
@@ -269,7 +273,9 @@ class SimplexTCPServer:
                     continue
 
                 # Successfully received FIN, Send FINACK and return to closed state.
-                logger.info("Entered TIME_WAIT state: received FIN from client.")
+                logger.info(
+                    "Entered TIME_WAIT state: received FIN from client. Sending FINACK..."
+                )
                 ack_segment = self.create_tcp_segment(
                     payload=b"",
                     seq_num=0,
@@ -391,7 +397,8 @@ class SimplexTCPServer:
                         flags={"ACK"},
                     )
                 else:  # Out of order packet
-                    logger.info(
+                    logger.info(f"Received out of order packet. Sending dup ACK...")
+                    logger.debug(
                         f"Received out of order packet with seq num {seq_num}. Sending dup ACK for seq num {next_seq_num - 1}"
                     )
                     ack = self.create_tcp_segment(

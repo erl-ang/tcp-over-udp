@@ -295,7 +295,7 @@ class SimplexTCPClient:
         # In the case it gets lost, the server will handle receiving the FIN
         # but not the previous FINACK.
         self.socket.sendto(fin_ack, self.proxy_address)
-        logger.info(f"Entered CLOSE_WAIT state: sent FINACK to server.")
+        logger.info(f"Entered CLOSE_WAIT state: sent FINACK to server. Sending FIN...")
 
         # Although the textbook specifies that the non-initiator's side of the
         # TCP connection should be closed after sending the last FIN, because the
@@ -312,8 +312,13 @@ class SimplexTCPClient:
                 _, _, flags, _, _ = unpack_segment(ack)
 
                 if not verify_checksum(ack) or not are_flags_set(flags, {"ACK", "FIN"}):
-                    logger.error(f"Verification failed. Dropping packet...")
+                    logger.error(
+                        f"Verification failed. Dropping packet with flags {flags}"
+                    )
                     continue
+
+                logger.info(f"Received FINACK from server.")
+                break
             except timeout:
                 self.update_timeout_on_timeout()
                 logger.info(
@@ -365,10 +370,14 @@ class SimplexTCPClient:
 
                 # Payload will be empty when we reach the end of the file.
                 if not payload:
+                    done_reading = True
                     logger.info(f"Reached end of file. Sending outstanding segments...")
 
                 # Fill the window with segments until it is full and send all segments.
-                if next_seq_num < send_base + (self.windowsize // MSS):
+                if (
+                    next_seq_num < send_base + (self.windowsize // MSS)
+                    and not done_reading
+                ):
                     segment = self.create_tcp_segment(
                         payload=payload,
                         seq_num=next_seq_num,
@@ -392,7 +401,7 @@ class SimplexTCPClient:
                 else:  # Window is full.
                     sent_new_payload = False
                     try:
-                        ack, _ = self.socket.recvfrom(2048)
+                        ack, _ = self.socket.recvfrom(self.windowsize)
                         _, ack_num, flags, _, _ = unpack_segment(ack)
                         if not verify_checksum(ack):
                             logger.error(f"Verification failed. Dropping packet...")
@@ -434,7 +443,7 @@ class SimplexTCPClient:
 
                             # Either way, we got a valid ACK for a segment in our window so we can move the window forward.
                             logger.debug(
-                                f"Received ACK {ack_num}. Moving window forward to [{ack_num + 1}, {next_seq_num - 1}]"
+                                f"Received ACK {ack_num}. Moving window forward..."
                             )
                             logger.debug(
                                 f"removing segment with payload {window[0][0][20:]}"
@@ -528,7 +537,7 @@ class SimplexTCPClient:
             )
 
             try:
-                ack, _ = self.socket.recvfrom(2048)
+                ack, _ = self.socket.recvfrom(self.windowsize)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(ack)
                 logger.info(
@@ -596,7 +605,7 @@ class SimplexTCPClient:
             logger.info(f"Entered SYN_SENT state: sent SYN segment to server")
 
             try:
-                synack_segment, _ = self.socket.recvfrom(2048)
+                synack_segment, _ = self.socket.recvfrom(self.windowsize)
 
                 seq_num, ack_num, flags, _, _ = unpack_segment(synack_segment)
                 logger.info(
