@@ -4,13 +4,14 @@ import ipaddress
 import os
 import struct
 
+LOGGING_LEVEL = logging.INFO
 logger = logging.getLogger("UTILS    ")
-logger.setLevel(logging.INFO)
+logger.setLevel(LOGGING_LEVEL)
 
 # To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(LOGGING_LEVEL)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
@@ -27,7 +28,7 @@ FIN_MASK = 0b00000010
 MSS = 576
 
 # Implementations of TCP usually have a maximum number of retransmissions for a segment.
-# 5-7 is a common valid.
+# 5-7 is a common value.
 MAX_RETRIES = 7
 
 # Retransmission and timeout constants:
@@ -36,7 +37,7 @@ INITIAL_TIMEOUT = 1
 ALPHA = 0.125  # weight for the EWMA of SampleRTT values
 BETA = 0.25  # weight for the EWMA of | EstimatedRTT - SampleRTT | values, "variability"
 TIMEOUT_MULTIPLIER = (
-    1.1  # used to increase the timeout after each retransmission, traditinoally 2
+    1.3  # used to increase the timeout after each retransmission, traditinoally 2
 )
 
 # The program that wants to terminate the connection will wait TIME_WAIT seconds before closing the connection after receiving

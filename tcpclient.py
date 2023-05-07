@@ -8,6 +8,7 @@ from utils import (
     unpack_segment,
     BETA,
     ALPHA,
+    LOGGING_LEVEL,
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
@@ -23,19 +24,19 @@ import time
 
 logger = logging.getLogger("TCPClient")
 # We can set the level to logging.INFO for less verbose logging.
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOGGING_LEVEL)
 
 # To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
+ch.setLevel(LOGGING_LEVEL)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 # Do the same to log to a file.
 fh = logging.FileHandler("tcpclient.log", mode="w")
-fh.setLevel(logging.DEBUG)
+fh.setLevel(LOGGING_LEVEL)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
 
@@ -166,7 +167,7 @@ class SimplexTCPClient:
         - Wait for an ACK from the server.
         - Wait for the server to send its own FIN segment and send an ACK.
         - Wait for TIME_WAIT seconds
-        - Send an ACK to the server before closing the connection.
+        - Closing the connection.
         """
         # Send a FIN segment to the server
         self._send_fin_and_wait_for_ack()
@@ -222,11 +223,11 @@ class SimplexTCPClient:
                 continue
             except Exception as e:
                 logger.warning(f"Exception occurred while terminating connection {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
         if retry_count >= MAX_RETRIES:
-            logger.error(
+            logger.warning(
                 f"Maximum number of retries reached while sending FIN. Aborting..."
             )
             exit(0)
@@ -305,7 +306,7 @@ class SimplexTCPClient:
         for _ in range(MAX_RETRIES):
             retry_count += 1
 
-            self.socket.sendto(fin_ack, self.proxy_address)
+            self.socket.sendto(fin, self.proxy_address)
             try:
                 ack, _ = self.socket.recvfrom(self.windowsize)
                 _, _, flags, _, _ = unpack_segment(ack)
@@ -330,7 +331,7 @@ class SimplexTCPClient:
 
     def send_file_gbn(self):
         """
-        Go-Back-N sender.
+        Go-Back-N implementation of sending a file to the server.
         """
         # Send base denotes the sequence number of the oldest unacknowledged segment.
         # This is initialized to TODO
@@ -563,7 +564,7 @@ class SimplexTCPClient:
                 continue
 
         if retry_count >= MAX_RETRIES:
-            logger.error(f"Maximum number of retries reached...")
+            logger.warning(f"Maximum number of retries reached...")
             self.send_fin()
 
         return
@@ -574,8 +575,7 @@ class SimplexTCPClient:
         Generate random sequence number, which will be the client's ISN that will be incremented
         for each segment sent.
         """
-        self.client_isn = 0
-        # self.client_isn = random.randint(0, 2**32 - 1)
+        self.client_isn = random.randint(0, 2**32 - 1)
         logger.debug(f"Client ISN: {self.client_isn}")
 
         # Create SYN segment with no payload, SYN flag set, and random sequence number. We
@@ -639,7 +639,7 @@ class SimplexTCPClient:
                 logger.warning(
                     f"Exception occurred while receiving SYNACK segment: {e}"
                 )
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.warning(f"Traceback: {traceback.format_exc()}")
                 continue
 
         if retry_count >= MAX_RETRIES:

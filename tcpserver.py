@@ -9,6 +9,7 @@ from utils import (
     BETA,
     ALPHA,
     TIMEOUT_MULTIPLIER,
+    LOGGING_LEVEL,
     MSS,
     MAX_RETRIES,
     INITIAL_TIMEOUT,
@@ -22,21 +23,29 @@ import time
 
 logger = logging.getLogger("TCPServer")
 # We can set the level to logging.INFO for less verbose logging.
-logger.setLevel(logging.DEBUG)
+logger.setLevel(LOGGING_LEVEL)
 
 # To log on stdout, we create console handler with a higher log level, format it,
 # and add the handler to logger.
 ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
+ch.setLevel(LOGGING_LEVEL)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 # Do the same to log to a file.
 fh = logging.FileHandler("tcpserver.log", mode="w")
-fh.setLevel(logging.INFO)
+fh.setLevel(LOGGING_LEVEL)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
+
+
+# Because the server doesn't measure SampleRTTs as often as the client,
+# we choose to make the TIMEOUT_MULTIPLIER smaller so the server can
+# send duplicate ACKs more often to signal a packet loss. This will
+# allow the client to detect the packet loss via the triple duplicate
+# ack and initiate a fast retransmit.
+TIMEOUT_MULTIPLIER = 1.1
 
 
 class SimplexTCPServer:
@@ -167,13 +176,13 @@ class SimplexTCPServer:
         This method is symmetric to the client's send_fin method, except that the server does not
         need to worry about its FIN requests being lost.
 
-        After the server is done receiving the file, the client will:
-        - Send a FIN to the server --> enters FIN_WAIT_1 state
-        - Receive an ACK from the server --> enters FIN_WAIT_2 state
-        - Receive a FIN from the server --> enters TIME_WAIT state
-        - Send an ACK to the server --> enters CLOSED state
+        After the server is done receiving the file, the server will:
+        - Send a FIN to the client --> enters FIN_WAIT_1 state
+        - Receive an ACK from the client --> enters FIN_WAIT_2 state
+        - Receive a FIN from the client --> enters TIME_WAIT state
+        - Send an ACK to the client --> enters CLOSED state
         """
-        # Send a FIN segment to the client
+        # Send a FIN segment to txhe client
         self._send_fin_and_wait_for_finack()
 
         self._wait_for_fin_and_send_finack()
@@ -204,11 +213,13 @@ class SimplexTCPServer:
         # reaching all its retransmissions, the client will abort the procedure and
         # close the connection.
         try:
-            fin_ack, _ = self.socket.recvfrom(2048)
-            _, _, flags, _, _ = unpack_segment(fin_ack)
+            fin_ack, _ = self.socket.recvfrom(self.windowsize)
+            seq_num, ack_num, flags, _, payload = unpack_segment(fin_ack)
 
             if not verify_checksum(fin_ack) or not are_flags_set(flags, {"ACK", "FIN"}):
-                logger.error(f"Verification failed. Dropping packet...")
+                logger.error(
+                    f"Verification failed. Dropping packet... with flags {flags}, seq_num {seq_num}, ack_num {ack_num}, payload {payload}"
+                )
 
             # Received FIN but not FINACK. This means that the client's FINACK was lost.
             if are_flags_set(flags, {"FIN"}):
@@ -248,11 +259,13 @@ class SimplexTCPServer:
         for _ in range(MAX_RETRIES):
             retry_count += 1
             try:
-                fin, _ = self.socket.recvfrom(2048)
-                _, _, flags, _, _ = unpack_segment(fin)
+                fin, _ = self.socket.recvfrom(self.windowsize)
+                seq_num, ack_num, flags, _, payload = unpack_segment(fin)
 
                 if not verify_checksum(fin) or not are_flags_set(flags, {"FIN"}):
-                    logger.error(f"Verification failed. Dropping packet...")
+                    logger.error(
+                        f"Verification failed. Dropping packet... with flags {flags}, seq_num {seq_num}, ack_num {ack_num}, payload {payload}"
+                    )
                     continue
 
                 # Successfully received FIN, Send FINACK and return to closed state.
@@ -307,7 +320,9 @@ class SimplexTCPServer:
         # just ignore this. The diagram on pg 251 of K&R depicts the
         # server closing the connection directly after sending the FIN.
         try:
-            ack, _ = self.socket.recvfrom(2048)
+            ack, _ = self.socket.recvfrom(self.windowsize)
+            # Not going to adjust SampleRTT here because connection is
+            # closing anyway.
         except timeout:
             self.update_timeout_on_timeout()
 
@@ -339,7 +354,7 @@ class SimplexTCPServer:
         with open(file_name, "wb") as file:
             while last_byte_recvd < self.file_size:
                 try:
-                    segment, _ = self.socket.recvfrom(2048)
+                    segment, _ = self.socket.recvfrom(self.windowsize)
                 except timeout:
                     self.update_timeout_on_timeout()
                     logger.warning(f"Timeout occurred receiving data. Retrying...")
@@ -366,7 +381,7 @@ class SimplexTCPServer:
                     logger.info(f"Received FIN from client...")
                     self.respond_to_fin()
                 elif not verify_checksum(segment):
-                    logger.info(
+                    logger.error(
                         f"Received corrupted segment with seq num {seq_num}. Sending dup ACK for seq num {next_seq_num - 1}"
                     )
                     ack = self.create_tcp_segment(
@@ -406,9 +421,7 @@ class SimplexTCPServer:
 
         logger.info(f"Sending SYNACK segment to client...")
 
-        # The ACK will contain the file size
-        self.server_isn = 0
-        # self.server_isn = random.randint(0, 2**32 - 1)
+        self.server_isn = random.randint(0, 2**32 - 1)
         payload = self._send_and_wait_for_ack(
             payload=b"", flags={"SYN", "ACK"}, expected_flags={"ACK"}
         )
@@ -452,10 +465,12 @@ class SimplexTCPServer:
 
         for _ in range(MAX_RETRIES):
             retry_count += 1
+
+            start = time.time()
             self.socket.sendto(synack_segment, self.client_address)
 
             try:
-                segment, _ = self.socket.recvfrom(2048)
+                segment, _ = self.socket.recvfrom(self.windowsize)
 
                 # Unpack the segment and extract the payload.
                 seq_num, ack_num, flags, _, payload = unpack_segment(segment)
@@ -477,6 +492,12 @@ class SimplexTCPServer:
                 if not are_flags_set(flags_byte=flags, expected_flags=expected_flags):
                     logger.error(f"Received segment with unexpected flags.")
                     continue
+
+                # If we get here, we have received the ACK we are expecting.
+                # If we have a valid sample RTT (not retransmittedd), update the timeoutInterrval.
+                if retry_count == 1:
+                    sample_rtt = time.time() - start
+                    self.update_timeout_on_rtt(sample_rtt)
                 break
             except timeout:
                 self.update_timeout_on_timeout()
