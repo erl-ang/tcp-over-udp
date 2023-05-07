@@ -40,11 +40,11 @@ fh.setFormatter(formatter)
 logger.addHandler(fh)
 
 
-# # Because the server doesn't measure SampleRTTs as often as the client,
-# # we choose to make the TIMEOUT_MULTIPLIER smaller so the server can
-# # send duplicate ACKs more often to signal a packet loss. This will
-# # allow the client to detect the packet loss via the triple duplicate
-# # ack and initiate a fast retransmit.
+# Because the server doesn't measure SampleRTTs as often as the client,
+# we choose to make the TIMEOUT_MULTIPLIER smaller so the server can
+# send duplicate ACKs more often to signal a packet loss. This will
+# allow the client to detect the packet loss via the triple duplicate
+# ack and initiate a fast retransmit.
 # TIMEOUT_MULTIPLIER = 1.1
 
 
