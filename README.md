@@ -3,4 +3,4 @@ A simplified version of the transmission control protocol (TCP) that operates ov
 
 
 TODO:
-update dis shit after i graduate
+update dis shit after i graduate. See README.pdf for now.
