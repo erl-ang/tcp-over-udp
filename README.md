@@ -6,7 +6,7 @@ A simplified version of the transmission control protocol (TCP) that operates ov
 Made for Professor Misra's Spring 2023 CSEE W4119 Computer Networks course at Columbia University. The [original spec can be found here](https://github.com/erl-ang/tcp-over-udp/blob/master/Programming%20Assignment%202.pdf).
 
 ## architecture overview 🏘️
-At a very high level, TCP and UDP are protocols used in computer networks for communication between devices. While TCP ensures reliable (i.e. in-order and complete) data delivery, UDP does not provide the guarantee that packets will arrive in-order nor that a given packet will arrive at all.
+At a very high level, TCP and UDP are protocols used in computer networks for communication between devices. While TCP ensures **reliable (i.e. in-order and complete) data delivery**, UDP does not provide the guarantee that packets will arrive in-order nor that a given packet will arrive at all.
 
 We can learn more about TCP's reliability mechanisms by implementing such mechanisms (error checking, timeouts, retransmissions, flow control, etc) on top of UDP. It is impossible to test if the reliability mechanisms are working as intended when running both the sender and receiver programs locally, as the data packets will likely not be dropped nor corrupted. 
 
@@ -377,9 +377,9 @@ Note that the server cannot measure as many $SampleRTTs$ as the client, as it do
 The checksum is calculated in `calculate_checksum` and attached to the segment in`make_tcp_segment`
 
 The process is as follows:
-- make sure the segment’s length is even. if not, pad a 0 byte.
+- make sure the segment’s length is even. if not, pad a 0-byte.
 - set the checksum field to 0
-- sum all the 16-but words in the segment (header and data with the checksum field set to 0)
+- sum all the 16-bit words in the segment (header and data with the checksum field set to 0)
 - take the 1st complement of this sum and wrap the overflow around
 
 ## Design Decisions Summary 🎨
@@ -415,22 +415,22 @@ verbose logging and arg checking, which are boring to discuss. here's something 
 
 When window sizes get bigger and `newudpl` has a lot of packet loss, lots of duplicate ACKs are sent and it can take a while for packets to be retransmitted since the client has to wait for the timer to expire.
 
-To try to detect packet losses earlier, I implemented a basic version of (fast retransmit)[https://en.wikipedia.org/wiki/TCP_congestion_control]. Upon receipt of 3 duplicate ACKs, we resend the first segment in the window, as it was probably lost.
+To try to detect packet losses earlier, I implemented a basic version of [fast retransmit](https://en.wikipedia.org/wiki/TCP_congestion_control). Upon receipt of 3 duplicate ACKs, we resend the first segment in the window, as it was probably lost.
 
 The implementation is in `SimplexTCPClient.send_file_gbn()`:
     
-    ```
-    # Part of fast Retransmit. If we receive 3 duplicate ACKs, then resend the segment
-    # with the lowest sequence number in the window.
-    if num_dup_acks == 3:
-    	logger.info(
-    		"Received 3 duplicate ACKs. Resending segment with seq_num {send_base}"
-      )
-      segment, num_retries = window[0]
-      window[0] = (segment, 0)
-      self.socket.sendto(segment, self.proxy_address)
-      num_dup_acks = 0
-    ```
+```
+# Part of fast Retransmit. If we receive 3 duplicate ACKs, then resend the segment
+# with the lowest sequence number in the window.
+if num_dup_acks == 3:
+  logger.info(
+    "Received 3 duplicate ACKs. Resending segment with seq_num {send_base}"
+  )
+  segment, num_retries = window[0]
+  window[0] = (segment, 0)
+  self.socket.sendto(segment, self.proxy_address)
+  num_dup_acks = 0
+```
     
 # Testing Environment 🧪
 
