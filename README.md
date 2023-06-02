@@ -20,6 +20,7 @@ Note that in this assignment, ACKs were assumed to be reliable which is not a re
 
 ## how to run 🏃
 ### installing, building, and running newudpl
+- If you cannot run the provided `newudpl` binary directly, build it from the provided `.tar` file:
 ```bash
 tar -xf newudpl-1.7.tar
 cd newudpl-1.7.tar
