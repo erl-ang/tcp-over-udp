@@ -1,21 +1,16 @@
 # tcp-over-udp
 name, uni: Erin Liang, ell2147
 
-A simplified version of the transmission control protocol (TCP) that operates over user datagram protocol (UDP) in order to provide reliable and ordered delivery of data packets between devices. To simulate a unreliable network, we use [newudpl from the Columbia Internet and Real Time Lab](http://www.cs.columbia.edu/~hgs/research/projects/newudpl/newudpl-1.4/newudpl.html). 
+A simplified version of the transmission control protocol (TCP) that operates over user datagram protocol (UDP) in order to provide reliable data delivery. To simulate a unreliable network, we use [newudpl from the Columbia Internet and Real Time Lab](http://www.cs.columbia.edu/~hgs/research/projects/newudpl/newudpl-1.4/newudpl.html). 
 
 Made for Professor Misra's Spring 2023 CSEE W4119 Computer Networks course at Columbia University. The [original spec can be found here](https://github.com/erl-ang/tcp-over-udp/blob/master/Programming%20Assignment%202.pdf).
 
-## architecture overview 🏘️
-At a very high level, TCP and UDP are protocols used in computer networks for communication between devices. While TCP ensures **reliable (i.e. in-order and complete) data delivery**, UDP does not provide the guarantee that packets will arrive in-order nor that a given packet will arrive at all.
+## Overview 🏘️
+TCP and UDP are protocols used in computer networks for communication between devices. TCP ensures reliable data delivery, meaning it guarantees that data is received in the correct order and without errors. On the other hand, UDP does not provide these guarantees, and packets can arrive out of order or even be lost.
 
-We can learn more about TCP's reliability mechanisms by implementing such mechanisms (error checking, timeouts, retransmissions, flow control, etc) on top of UDP. It is impossible to test if the reliability mechanisms are working as intended when running both the sender and receiver programs locally, as the data packets will likely not be dropped nor corrupted. 
+To understand TCP's reliability mechanisms better, we can implement similar mechanisms on top of UDP. However, testing these mechanisms locally is challenging because the data packets are unlikely to be dropped or corrupted in a local network.
 
-<p align="center">
-  <img src="https://github.com/erl-ang/tcp-over-udp/blob/master/assets/local-transmission.png" style="width: 50%;">
-</p>
-
-
-Thus, we use newudpl, a network emulator written by Columbia University's Internet and Real Time Lab, as a proxy between the client and the server to test whether our bootleg TCP is working as expected. 
+To overcome this challenge, we can use a network emulator, newudpl, as a proxy between the client and the server. This allows us to test our "bootleg" TCP implementation and see if it behaves as expected under various network conditions.
 
 <p align="center"><img src="https://github.com/erl-ang/tcp-over-udp/blob/master/assets/proxy.png" style="width: 70%;"></p>
 
@@ -37,28 +32,11 @@ Example `newudpl` command (recreating diagram above):
 ```bash
 ./newudpl -p 2222:3333 -i 127.0.0.1:1234 -o 127.0.0.1:4444 -vv -L50
 ```
-- You can use `-p [receive port]:[send port]` to specify which port `newudpl` listens for udp packets from source host and from which port to send udp packets to destination host. The client will send packets to the `receive port`of `newudpl`
+- for more help on how to run `newudpl`, see [this link](http://www.cs.columbia.edu/~hgs/research/projects/newudpl/newudpl-1.4/newudpl.html)
 
-### running tcpclient.py 💻
-
-To run the client, an example command is:
-
-```bash
-python3 tcpclient.py ./testfiles/screendump.txt 0.0.0.0  2222 1152 1234
-```
-
-- This will start running a tcpclient that transfers `screendump.txt` listening on port 1234 for ACKs. The tcpclient will forward all segments it needs to send to the server to `newudpl` (the proxy), which is listening on address (0.0.0.0, 2222). The tcp `windowsize` for pipelining segments is set to 1152.
+### Running `tcpclient.py` 💻
 
 Generically, the usage of `tcpclient` is:
-
-```bash
-usage: tcpclient.py [-h] file address_of_udpl port_number_of_udpl windowsize ack_port_number
-```
-
-- Note that the `windowsize` must be a multiple the MSS set in `utils.py`, but the program will yell at you if you don’t provide the correct arguments. The MSS can be adjusted in utils.py to test performance of smaller segments.
-- I set MSS to 536 in my submission because [Wikipedia says that that’s the typical TCP MSS size](https://en.wikipedia.org/wiki/Maximum_segment_size#:~:text=%5Bedit%5D-,The%20default%20TCP%20Maximum%20Segment%20Size%20is%20536,-.%5B6%5D).
-
-- Invoking the help options for the client:
 
 ```bash
 $ python3 tcpclient.py -h
@@ -77,25 +55,19 @@ optional arguments:
   -h, --help           show this help message and exit
 ```
 
-### running `tcpserver.py`  💻
-
-To run the server, an example command is:
+To run the client, an example command is:
 
 ```bash
-python3 tcpserver.py ./testfiles/screendump.txt  4444 127.0.0.1 1234
+python3 tcpclient.py ./testfiles/screendump.txt 0.0.0.0  2222 1152 1234
 ```
 
-- This will start running a tcpserver listening on port 4444 locally. It will receive `screendump.txt` and acknowledge receipt of tcp segments by sending ACKs to the client’s address (port 1234 locally)
+- This will start running a tcpclient that listens on port 1234 for ACKs and has `screendump.txt` in its possession. The tcpclient will forward all segments it needs to send to the server to `newudpl`, which is listening on address (0.0.0.0, 2222). The tcp `windowsize` for pipelining segments is set to 1152.
+- The MSS can be adjusted in utils.py to test performance of smaller segments.
+
+
+### Running `tcpserver.py`  💻
 
 Generically, the usage of `tcpserver` is:
- - note that (address_for_acks, port_for_acks) is the client’s address. 
-
-```bash
-usage: python3 tcpserver.py [-h] file listening_port address_for_acks port_for_acks
-```
-
-- Invoking the help options for the server:
-
 ```bash
 $ python3 tcpserver.py -h
 usage: tcpserver.py [-h] file listening_port address_for_acks port_for_acks
@@ -112,7 +84,17 @@ optional arguments:
   -h, --help        show this help message and exit
 ```
 
-## project files
+To run the server, an example command is:
+
+```bash
+python3 tcpserver.py ./testfiles/screendump.txt  4444 127.0.0.1 1234
+```
+
+- This will start running a tcpserver listening on port 4444 locally. It will receive `screendump.txt` and acknowledge receipt of tcp segments by sending ACKs to the client’s address (port 1234 locally)
+- Note that `(address_for_acks, port_for_acks)` is the client’s address. 
+
+
+## Project Files 🗄️
 ```
 ├── tcp-over-udp
    ├── README.md <-- You're here now!
@@ -136,8 +118,7 @@ optional arguments:
 | `tcpserver.py`                 | Contains all the code for server functionality. 
 
 ## Features
-The code works as it is and as the assignment spec specifies. Specifically, it implements:
-
+The file sharing system implements:
 - Connection establishment via the three-way handshake
 - Reliable transmission of a file
 - Connection teardown via sending a FIN (where either the client and server can initiate)
@@ -153,7 +134,7 @@ You can adjust some of the TCP variables set in `utils.py` to test what yields t
 Note that adjusting these variables comes at your own risk. No matter what, the connection is guaranteed to terminate gracefully (but not always efficiently). For example, if MAX_RETRIES is too low and there is significant packet loss, the client will probably hit the threshold for retransmissions, only send over a portion of the data, and send a FIN to terminate the connection. This is reasonable behavior because a client should probably wait for the network conditions to get better before trying to transmit a file.
 
 
-## normal program run
+## Normal Program Run
 *A description of a successful file transfer between the client and the server. Other cases are discussed later in this document*
 
 After successfully running udpl, tcpserver, and tcpclient, the following will occur...
@@ -162,72 +143,31 @@ After successfully running udpl, tcpserver, and tcpclient, the following will oc
 - connection teardown
 - with retransmission timers being set in between!
 
-### TCPClient Walkthrough
-
-#### Three way handshake
-- The client will initiate the three-way handshake. It will send SYN segments until the server responds with a SYNACK.
-- The client will send an ACK back to complete the three-way handshake sequence. This ACK will have some data piggybacked on it— the filesize of the file being transferred.
-- At this point, the three-way handshake is finished in the client’s POV, but the “=====connection established======” message doesn’t print until the server ACKs this back, as the client’s ACK could have been lost.
-
-#### Data transmission
-The client will then start sending data. Go-Back-N pipelining is used so not every data segment needs to be ACK’d before another is sent. To do this:
-- The client creates a window (which holds all the segments that are sent but not ACK’d) fill it up with tcp segments with (MSS 20) bytes of the file data as the segments’ payload. After receiving an ACK for a segment in the window, it will move the window’s indices forward and send the next data from the file.
-- On 3 duplicate ACKs, the client will retransmit the first segment in the window
-- If a timeout occurs, all the segments in the window are resent.
-
-After the client reaches the end of the file, we can’t return yet because the data might not have been received. Instead, wait until the server sends a FIN to indicate that the file is finished being received.
-
-#### Connection teardown
-Upon receiving a FIN, the client will:
-- respond with an ACK (which may get lost. See code for comment on this)
-- send its own FIN and retransmit if there’s a timeout
-- receive an ACK and send nothing, exiting.
-
-This entire time, the timeout values will be adjusted according to $SampleRTTs$ and timeout adjustments as discussed in RFC 6298. This is also discussed later in this document.
-
-### TCPServer Walkthrough
-
-#### Three-way handshake
-- The server will wait and listen for a SYN segment. To avoid listening forever and having a half open-connection, it will try `MAX_RETRIES` amount of times, setting the timeout interval accordingly.
-- If it receives one, it will respond with a SYNACK and wait until the client sends its final ACK to complete the connection. This ACK will contain the filesize.
-
-
-#### Data transmission
-- Because the server needs to acknowledge that it has received data (filesize), it will send an ACK back, indicating to the client that it is ready to receive the file.
-- The server will start to receive the file from the client. It keeps track of the next in-order sequence number. When it receives a segment, it checks whether the segment has this sequence number. If so, it writes the data to the output file. Out of order segments are discarded. In both cases, an ACK is sent with the next sequence number that the server expects. When the segment is out of order, this ACK will be a duplicate.
-- The server will receive data until it receives the amount of bytes specified by the payload in the last leg of the handshake or if the client sends a FIN request.
-
-#### Connection teardown
-The server will send a FIN request, indicating that it is done reading the file. Then, the server will:
-- wait until it receives a FINACK from the client
-- after receiving the FINACK from the client, it will wait for the client’s FIN segment and send its own FINACK.
-- wait TIME_WAIT seconds after sending the FINACK and exit.
-
-## how it works
+## How it Works
 ### Establishing a connection 🤝
 
-The conceptual details of this section are taken from pg 249 of K&R. As TCP is connection-oriented, the two processes that are trying to communicate with each other must first set up a connection with each other via a procedure called the three-way handshake. This connection-establishment procedure is as follows:
+The information in this section is derived from K&R pg249. In TCP, which is a connection-oriented protocol, two processes intending to communicate with each other need to establish a connection through a procedure known as the three-way handshake. The steps involved in the connection-establishment procedure are as follows:
 
 <p align="center">
   <img src="https://github.com/erl-ang/tcp-over-udp/blob/master/assets/connection-est.png">
 </p>
 
 1. The client process initiates by first sending a SYN with a random `client_isn` in the seq_num in the segment to the server.
-2. After receiving the SYN (there is a possibility this doesn’t happen), the server will respond with SYNACK segment to indicate that it has agreed to establish this connection. This SYNACK has `client_isn+1` in the header’s ack field, and puts its own initial random sequence number `server_isn` in the seq num.
+2. After receiving the SYN, the server will respond with SYNACK segment to indicate that it has agreed to establish this connection. This SYNACK has `client_isn+1` in the header’s ack field, and puts its own initial random sequence number `server_isn` in the seq num.
 3. After the client has received the SYNACK segment, the client will send a final segment to complete the connection-establishment procedure. This final ACK segment is piggybacked on 4 bytes of data containing the file’s size.
 
 This is the exchange if all goes well. But what happens if the SYN segment does not arrive?
 
-#### packet loss during a three-way handshake
-*packet loss can occur during connection establishment so the following design decisions were made to avoid a half-open connection for a prolonged period of time.*
+#### Packet Loss During a Three-way Handshake
+*As packet loss can occur during connection establishment, the following design decisions were made to avoid a half-open connection for a prolonged period of time.*
 
-Losing SYN packet: 
-- Following [this Ed thread](https://edstem.org/us/courses/36439/discussion/2979548), the client will try sending the SYN segment MAX_RETRIES amount of times until it receives an SYNACK with the client_isn+1, resetting the timeout according to the tcp standard. It will also attempt to measure a SampleRTT if this SYN segment is not retransmitted.
-- If the client doesn’t receive that SYNACK within MAX_RETRIES transmissions, it will just abort the connection.
-- The server will be listening for the SYN until it times out MAX_RETRIES times (multiplying the timeout every time), until it also aborts the connection.
+**Losing SYN packet:**
+- Following [this Ed thread](https://edstem.org/us/courses/36439/discussion/2979548), the client will try sending the SYN segment `MAX_RETRIES` amount of times until it receives an SYNACK with the `client_isn+1`, resetting the timeout according to the TCP standard.
+- If the client doesn’t receive that SYNACK within `MAX_RETRIES` transmissions, it will abort the connection.
+- The server will be listening for the SYN until it times out `MAX_RETRIES` times (increasing the timeout accordingly), aborting the connection if it has.
 
-Losing the client’s final ACK
-- See the comment in `establish_connection`. The client will send an ACK segment with the file size piggybacked to the server and wait for an ACK from the server before officially sending file data. This ACK is treated like all other segments (retransmitted until it hits the limit). If the ACK is not ACk’d back within the retransmission limit, the client will send a FIN and the server will respond.
+**Losing the client’s final ACK:**
+- See the comment in `establish_connection`. The client will send an ACK segment with the file size piggybacked to the server and wait for an ACK from the server before officially sending file data. This ACK is treated like all other segments (retransmitted until it hits the limit). If the ACK is not ACK’d back within the retransmission limit, the client will send a FIN and the server will respond.
 - This mechanism is to prevent a half-open connection if the last ACK of the three-way handshake gets lost. While the server will timeout waiting for its SYNACK to be ACK'd, the client will think that the connection is established and start sending data. By waiting for an additional ACK, we can ensure that the connection is fully established before sending file data.
 - The tradeoff is just a longer connection establishment time. This is implemented in `SimplexTCPClient._send_ack_with_filesize`
 
@@ -237,7 +177,7 @@ Losing the client’s final ACK
 
 The file is divided in (file size in bytes)/(MSS in bytes) number of segments, with each segment being of size $MSS$. Data transmission and reception is implemented in `SimplexTCPClient.send_file_gbn` and `SimplexTCPServer.receive_file_gbn`
 
-The client will read MSS data from the file to break it into packets and send out (windowsize // MSS) packets. We keep track of the window’s packets and how many retries the packet has taken with a list of tuples to take valid $SampleRTT$ measurements.
+The client will read $MSS$ data from the file to break it into packets and send out (windowsize // MSS) packets. We keep track of the window’s packets and how many retries the packet has taken with a list of tuples to take valid $SampleRTT$ measurements.
 
 ```
 # window format:
@@ -252,9 +192,9 @@ The client will read MSS data from the file to break it into packets and send ou
 
 One segment from the window will be chosen to measure a $SampleRTT$ for so we can update the timeout values. If the segment has been retransmitted, we discard the $SampleRTT$ and just have to live with the fact that we won’t have a $SampleRTT$ for this RTT.
 
-Once the client has filled up its window, the client will try receiving acks, verifying if the ack for a segment that is currently in the window. If it is, we can move the window forward by removing the segment from the window and updating the `send_base`.
+Once the client has filled up its window, the client will try receiving ACKs, verifying if the ACK for a segment that is currently in the window. If it is, we can move the window forward by removing the segment from the window and updating the `send_base`.
 
-To account for lost packets, if the client does not receive a valid ack in time, it will timeout and retransmit all the segments in the window, incrementing the number of retransmissions that the segments have taken.
+To account for lost packets, if the client does not receive a valid ACK in time, it will timeout and retransmit all the segments in the window, incrementing the number of retransmissions that the segments have taken.
 
 If a segment has been retransmitted too many times, it will begin the connection teardown sequence by sending a FIN to the server.
 
@@ -265,6 +205,7 @@ Fast retransmit
 #### Data reception 👐
 
 All the data that the client sends will be written to a file called `recvd_file` with no extensions so users can easily `diff` it with the original file. Data reception is implemented in `SimplexTCPServer.receive_file_gbn`.
+
 The receiver will keep track of two state variables:
 - the next expected sequence number to receive next, denoted by `next_seq_num`.
 - the number of `bytes_received` so far from the client. This is used so the server can detect when we’re done transmitting. Recall that the client sends the size of the file to the server as part of the last third of the three-way handshake, so the server can just compare `bytes_received` with the filesize.
@@ -307,7 +248,7 @@ To test this functionality:
 
 ### Error logging ⚠️
 
-Python’s `logging` module is used to record timeouts, duplicate acks, retransmissions, and connection teardown/setup states so there are timestamps recorded with everything. The logging levels can be adjusted per the README.txt, but it is pasted here for convenience:
+Python’s `logging` module is used to record timeouts, duplicate acks, retransmissions, and connection teardown/setup states with timestamps.
 
 To get **more** verbose logging, you can set `LOGGING_LEVEL` in `utils.py` to `logging.DEBUG`. This may come at the expense of performance if the file is large and especially because the logs are being written to multiple streams.
 
@@ -324,33 +265,29 @@ To get **less** verbose logging, you can set LOGGING_LEVEL to `logging.INFO` , `
 
 ### 20-byte TCP header format  💆‍♀️
 
-The format of the TCP headers attached to the payload follows figure 3.29 from the textbook. There aren’t many design decisions we can make here.
-
+The format of the TCP headers attached to the payload follows the below K&R diagram:
 
 <p align="center">
   <img src="https://github.com/erl-ang/tcp-over-udp/blob/master/assets/tcp-seg-structure.png">
 </p>
 
+The header is created in `_make_tcp_header_without_checksum` in utils, as we cannot compute the checksum without the segment’s payload.
 
-The 20-byte TCP header a python bytearray, which we extend to add the payload.
-
-The header is created in `_make_tcp_header_without_checksum` in utils, as we cannot compute the checksum without the segment’s payload (if it has a payload).
-
-There are some fields that are not used in this program (CWR, ECE, RST, urgent data pointer, options), so the header looks more like:
+There are some fields that are not used in this program (CWR, ECE, RST, urgent data pointer, options), so the implemented header looks like:
 
 <p align="center">
   <img src="https://github.com/erl-ang/tcp-over-udp/blob/master/assets/implemented-tcp-structure.png">
 </p>
 
-### Retransmission timer adjustment as per TCP standard ⏳⌛
+### Retransmission timer adjustment as per TCP standard ⏳
 
 Figuring out how long the timeout should be before a segment gets retransmitted is tough; it must be larger than the RTT, otherwise there would be too many retransmissions. But it can’t be too large, otherwise lost packets will not be quickly retransmitted.
 
 The following statements document some design choices concerning the retransmission timer.
 
-A maximum retransmission limit of 7 (can be tweaked in `utils`) was set because typical TCP implementations have a `MAX_RETRIES` of 5-7
+A maximum retransmission limit of 7 (can be tweaked in `utils`) was set because typical TCP implementations have a `MAX_RETRIES` of 5-7.
 
-The socket timeouts are set via the below formula taken from the textbook. These implementations can be found in the tcpclient and tcpserver’s `update_timeout_rtt`
+The socket timeouts are set via the below formula taken from the textbook. These implementations can be found in the tcpclient and tcpserver’s `update_timeout_rtt()`
     
     - $$ TimeoutInterval = EstimatedRTT + 4DevRTT $$
     
@@ -359,13 +296,15 @@ The socket timeouts are set via the below formula taken from the textbook. These
     - $$ DevRTT = 0.75DevRTT + 0.25|SampleRTT - EstimatedRTT|$$  
     - the `EstimatedRTT` formula is a weighted combination of the previous value of `EstimatedRTT` and `SampleRTT` from RFC 6298. The motivation behind using an “average” is that `SampleRTT`s vary a lot with network congestion and fluctuations:
 
-Having a timer per unACK’d packet would be too hefty for the program (there can be lots of in-flight packets). Like most other TCP implementations, the SimplexTCPClient only takes a `SampleRTT` measurement for only one of the transmitted but UNACK’d segments. This is because we only really need a new value of $SampleRTT$ per RTT, it is unnecessary and slows down things if we take any more measurements.
+Having a timer per unACK’d packet would be too hefty for the program (there can be lots of in-flight packets). 
 
-The client does not compute $SampleRTT$ for retransmissions, as the client cannot distinguish between an ACK for the original segment vs an ACK for a retransmitted segment (see HW3). Measuring RTTs for retransmissions could cause a huge dip in the $SampleRTT$ and lead to even faster transmissions, jamming the network more.
+Like most other TCP implementations, the SimplexTCPClient only takes a `SampleRTT` measurement for only one of the transmitted but UNACK’d segments. This is because we only really need a new value of $SampleRTT$ per RTT, it is unnecessary and slows down things if we take any more measurements.
+
+The client does not compute $SampleRTT$ for retransmissions, as the client cannot distinguish between an ACK for the original segment vs an ACK for a retransmitted segment. Measuring RTTs for retransmissions could cause a huge dip in the $SampleRTT$ and lead to even faster transmissions, jamming the network more.
 - This is implemented by keeping track of how many times a packet has had to be retransmitted in the window.
-- when there’s a lot of loss (e.g. L50), it takes a longer time to send as expected because the SampleRTTs aren’t updating on a per-RTT basis since there’s more retransmissions.
+- When there’s a lot of loss (e.g. L50), it takes a longer time to send (as expected) because the SampleRTTs aren’t updating on a per-RTT basis since there’s more retransmissions.
 
-Per RFC 6298, the initial $timeoutInterval$ value is set to 1 second. Upon receipt of the first valid ACK, the EstimatedRTT is initialized to $SampleRTT$, and $DevRTT=0.5*SampleRTT$.
+Per RFC 6298, the initial $timeoutInterval$ value is set to 1 second. Upon receipt of the first valid ACK, the $EstimatedRTT$ is initialized to $SampleRTT$, and $DevRTT=0.5*SampleRTT$.
 - We try to measure valid ACKs in the connection setup sequence, but there is a chance that these segments also had to be retransmitted.
 
 I chose to not do any adjusting for the $SampleRTT$ in the FIN sequence, as the connection is shutting down.
