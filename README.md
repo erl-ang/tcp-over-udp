@@ -17,7 +17,7 @@ To overcome this challenge, we can use a network emulator, `newudpl`, as a proxy
 Note that in this assignment, ACKs were assumed to be reliable (i.e. ACKs do not go through `newudpl`), which is not a realistic assumption.
 
 ## How to Run 🏃
-### Eunning `newudpl`
+### Running `newudpl`
 
 If you cannot run the provided `newudpl` binary directly, build it from the provided `.tar` file:
 ```bash
